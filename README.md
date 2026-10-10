@@ -10,11 +10,38 @@ işler.
 
 ## Kurulum (yeni Godot oyunu)
 
-1. `addons/streamember/` klasörünü oyunun projesine kopyala; Project → Project Settings → Plugins → **StreamEmber Live** aç.
+1. [Releases](https://github.com/StreamEmberPlatform/ember-core-godot/releases/latest) sayfasından
+   `streamember-godot-X.Y.Z.zip` indir, oyunun proje köküne aç (`addons/streamember/` oluşur);
+   Project → Project Settings → Plugins → **StreamEmber Live** aç.
    Eklenti `StreamEmber` autoload'unu ve `streamember/*` proje ayarlarını ekler.
 2. `res://streamember/streamember-module.json`: `applicationUuid` (Falcon oyun UUID'si), `code` (kebab-case), `name`.
 3. `res://streamember/game-schema.json`: aksiyonlar ve ayarlar (GTA V/RDR2 şablonlarıyla aynı biçim; Falcon'a da bu yazılır).
 4. Export: Export → Resources → "Filters to export non-resource files" alanına `streamember/*.json` ekle.
+5. `addons/streamember/` oyunun reposuna commit'lenir (klonlayan herkes aynı sürümle açar), ama **elle değiştirilmez**:
+   düzeltme bu repoya gelir, oyunlara güncellemeyle gider.
+
+## Güncelleme
+
+- **Editör:** açılışta günde bir kez son Release denetlenir; yenisi varsa "Update" ile indirilir, eklenti klasörü
+  değiştirilir (artık olmayan dosyalar silinir) ve editör kaydedip yeniden başlar. Elle: Project → Tools →
+  **StreamEmber Live: check for updates**. Kapatmak: Project Settings → `streamember/editor/check_updates`.
+- **Komut satırı** (oyunun klasöründe; çok oyunu bir döngüyle güncellemek için):
+  ```bash
+  godot --headless --path . -s res://addons/streamember/update.gd                         # son sürüm
+  godot --headless --path . -s res://addons/streamember/update.gd -- --version=0.2.0      # belirli sürüm
+  godot --headless --path . -s res://addons/streamember/update.gd -- --from=../ember-core-godot   # yayınlanmamış yerel çekirdek
+  godot --headless --path . -s res://addons/streamember/update.gd -- --check              # yalnız denetle (yeni varsa çıkış 2)
+  godot --headless --path . --import
+  ```
+- Güncellemeden sonra değişikliği oyunun reposuna commit'le (`addons/streamember` + CHANGELOG'daki sürüm).
+- Sürüm kuralı ve her sürümde ne değiştiği: `CHANGELOG.md`. MAJOR sürümde editör ayrıca uyarır.
+
+## Yeni sürüm yayınlamak (çekirdek geliştiricisi)
+
+1. Değişiklik + test; `streamember.gd` `VERSION` ve `plugin.cfg` `version` birlikte artar; `CHANGELOG.md`'ye `## X.Y.Z — tarih`.
+2. Yeni `.gd` dosyası eklediysen projeyi Godot 4.4+ ile bir kez açıp oluşan `.uid` dosyasını da commit'le.
+3. `git tag vX.Y.Z && git push origin main vX.Y.Z`. CI Godot 4.3 ve 4.7'de birim + uçtan uca testleri koşar, geçerse
+   GitHub Release'i (zip + CHANGELOG notu) açar. Oyunların editörleri yalnız Release'leri görür.
 
 ## Kullanım
 

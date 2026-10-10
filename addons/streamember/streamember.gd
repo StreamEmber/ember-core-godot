@@ -19,7 +19,7 @@ signal connection_changed(connected: bool)
 ## Status texts the core shows (connected, test hotkeys, problems). level: 0 info, 1 warning, 2 error.
 signal notified(text: String, level: int)
 
-const VERSION := "0.1.0"
+const VERSION := "0.2.0"
 const SOURCE := "godot"
 const MODULE_PATH := "res://streamember/streamember-module.json"
 const SCHEMA_PATH := "res://streamember/game-schema.json"

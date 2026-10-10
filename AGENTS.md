@@ -16,6 +16,8 @@ addons/streamember/
   streamember_values.gd          StreamEmberValues (dotted-path reader)
   streamember_manifest.gd        StreamEmberManifest (streamember-module.json + game-schema.json)
   streamember_json.gd            JSON helpers
+  updater.gd, update.gd          release check/install (editor plugin) and the command-line updater
+  *.uid                          committed: games on Godot 4.4+ keep stable ids across updates
 streamember/                     the demo's manifest and schema (a game ships its own)
 demo/                            example game: handlers, settings, bounded work, cleanup
 tests/run_tests.gd               headless unit tests (no network)
@@ -30,7 +32,14 @@ tests/e2e/                       fake services + scene; run.sh asserts the full 
 4. Inside the addon reference scripts with `preload` constants (works without the editor's class cache);
    `class_name` exists for game code.
 5. Every new branch or parser gets a check in `tests/run_tests.gd`; protocol changes also in `tests/e2e/`.
-6. Bump `VERSION` in `streamember.gd` and `plugin.cfg` together; add a `CHANGELOG.md` line.
+6. Bump `VERSION` in `streamember.gd` and `plugin.cfg` together; add a `## X.Y.Z — date` section to `CHANGELOG.md`.
+7. Other teams' games update from GitHub Releases. Semver: PATCH fix, MINOR backward-compatible addition, MAJOR only
+   when game code must change (mark it **Uyumsuz** in the changelog with the migration step). Never rename or remove
+   a public member in a MINOR/PATCH; deprecate first.
+8. Release = push a `vX.Y.Z` tag matching `plugin.cfg`; `.github/workflows/ci.yml` tests (Godot 4.3 + 4.7) and
+   publishes. A new `.gd` file ships with its `.uid` (open the project once in Godot 4.4+).
+9. Everything in `addons/streamember/` belongs to the core: the updater replaces the folder and deletes files a
+   release no longer has. Game-specific files never go there.
 
 ## Rules for a game using it
 

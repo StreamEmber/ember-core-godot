@@ -9,6 +9,7 @@ const Action := preload("res://addons/streamember/streamember_action.gd")
 const Manifest := preload("res://addons/streamember/streamember_manifest.gd")
 const Client := preload("res://addons/streamember/event_fabric_client.gd")
 const Core := preload("res://addons/streamember/streamember.gd")
+const Updater := preload("res://addons/streamember/updater.gd")
 
 var _failures := 0
 var _checks := 0
@@ -21,6 +22,7 @@ func _initialize() -> void:
 	_test_jwt()
 	_test_client()
 	_test_core_queue()
+	_test_updater()
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -159,3 +161,45 @@ func _test_core_queue() -> void:
 		core._incoming.clear()
 	check(core._seen.size() == Core.REMEMBERED_IDS, "remembered ids bounded")
 	core.free()
+
+
+func _test_updater() -> void:
+	check(Updater.compare("0.10.0", "0.9.9") == 1 and Updater.compare("v1.2.3", "1.2.3") == 0, "version compare")
+	check(Updater.compare("1.2.3-beta", "1.2.4") == -1 and Updater.compare("", "0.1.0") == -1, "version compare suffix/empty")
+	check(Updater.major("2.0.1") == 2, "major")
+	check(Updater.installed_version() == Core.VERSION, "plugin.cfg version == VERSION")
+
+	var zip_path := "user://updater-test.zip"
+	var packer := ZIPPacker.new()
+	packer.open(zip_path)
+	var entries := {
+		"Org-ember-core-godot-abc123/addons/streamember/plugin.cfg": "[plugin]\nversion=\"9.0.0\"\n",
+		"Org-ember-core-godot-abc123/addons/streamember/streamember.gd": "extends Node",
+		"Org-ember-core-godot-abc123/addons/streamember/sub/new.gd": "new",
+		"Org-ember-core-godot-abc123/demo/addons/streamember/nested.gd": "nested copy",
+		"Org-ember-core-godot-abc123/addons/streamember/../evil.gd": "evil",
+		"Org-ember-core-godot-abc123/README.md": "readme",
+	}
+	for name in entries:
+		packer.start_file(name)
+		packer.write_file(entries[name].to_utf8_buffer())
+		packer.close_file()
+	packer.close()
+	var files := Updater.files_from_zip(FileAccess.get_file_as_bytes(zip_path))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(zip_path))
+	check(files.keys().size() == 3 and files.has("sub/new.gd") and files.has("plugin.cfg"), "zip: only <root>/addons/streamember files: %s" % [files.keys()])
+
+	var target := "user://updater-test-target"
+	for name in ["streamember.gd", "old.gd", "old.gd.uid", "icon.svg", "icon.svg.import", "gone.png.import"]:
+		DirAccess.make_dir_recursive_absolute(target)
+		FileAccess.open(target.path_join(name), FileAccess.WRITE).store_string("old")
+	files["icon.svg"] = "svg".to_utf8_buffer()
+	check(Updater.install({"plugin.cfg": PackedByteArray()}, target) != "", "install refuses a non-addon")
+	check(FileAccess.file_exists(target.path_join("old.gd")), "refused install wrote nothing")
+	check(Updater.install(files, target) == "", "install")
+	check(Updater.installed_version(target) == "9.0.0", "installed version")
+	check(FileAccess.get_file_as_string(target.path_join("sub/new.gd")) == "new", "new file in subfolder")
+	check(not FileAccess.file_exists(target.path_join("old.gd")) and not FileAccess.file_exists(target.path_join("old.gd.uid")), "removed files deleted")
+	check(FileAccess.file_exists(target.path_join("icon.svg.import")) and not FileAccess.file_exists(target.path_join("gone.png.import")), ".import kept only with its file")
+	check(Updater.files_from_dir("res://").has("updater.gd"), "files from a local checkout")
+	OS.move_to_trash(ProjectSettings.globalize_path(target))
