@@ -1,0 +1,84 @@
+{
+  "settings": {
+    "sections": [
+      {
+        "id": "boxes",
+        "order": 10,
+        "label": { "tr": "Kutular", "en": "Boxes" },
+        "description": { "tr": "İzleyicilerin düşürdüğü kutular.", "en": "Boxes dropped by viewers." },
+        "columns": 2
+      }
+    ],
+    "fields": [
+      {
+        "id": "maxAlive",
+        "path": "boxes.maxAlive",
+        "sectionId": "boxes",
+        "order": 10,
+        "label": { "tr": "Aynı anda en fazla", "en": "Max at once" },
+        "type": "integer",
+        "control": "slider",
+        "default": 50,
+        "constraints": { "min": 1, "max": 200, "step": 1 }
+      },
+      {
+        "id": "showNames",
+        "path": "boxes.showNames",
+        "sectionId": "boxes",
+        "order": 20,
+        "label": { "tr": "İzleyici adlarını göster", "en": "Show viewer names" },
+        "type": "boolean",
+        "control": "switch",
+        "default": true
+      }
+    ]
+  },
+  "teams": { "enabled": false, "maxItems": 8 },
+  "actions": [
+    {
+      "id": "box.drop",
+      "order": 10,
+      "icon": "mdi-cube",
+      "label": { "tr": "Kutu düşür", "en": "Drop boxes" },
+      "description": { "tr": "Ekrana kutular düşer.", "en": "Boxes fall onto the screen." },
+      "arguments": [
+        {
+          "id": "count",
+          "path": "count",
+          "order": 10,
+          "label": { "tr": "Adet", "en": "Count" },
+          "description": { "tr": "Paket başına; adetle çarpılır (en fazla 50).", "en": "Per packet; multiplied by quantity (max 50)." },
+          "type": "integer",
+          "control": "slider",
+          "default": 3,
+          "constraints": { "min": 1, "max": 20, "step": 1 }
+        }
+      ]
+    },
+    {
+      "id": "screen.message",
+      "order": 20,
+      "icon": "mdi-message-text",
+      "label": { "tr": "Ekrana yazı", "en": "Show message" },
+      "arguments": [
+        {
+          "id": "text",
+          "path": "text",
+          "order": 10,
+          "label": { "tr": "Metin", "en": "Text" },
+          "description": { "tr": "{user}, {gift}, {quantity}, {comment} kullanılabilir.", "en": "{user}, {gift}, {quantity}, {comment} can be used." },
+          "type": "string",
+          "default": "{user}: {gift} ×{quantity}",
+          "constraints": { "maxLength": 120 }
+        }
+      ]
+    },
+    {
+      "id": "box.clear",
+      "order": 30,
+      "icon": "mdi-broom",
+      "label": { "tr": "Kutuları temizle", "en": "Clear boxes" },
+      "arguments": []
+    }
+  ]
+}

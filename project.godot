@@ -1,0 +1,17 @@
+; Engine configuration file.
+
+config_version=5
+
+[application]
+
+config/name="StreamEmber Godot Core"
+run/main_scene="res://demo/main.tscn"
+config/features=PackedStringArray("4.3")
+
+[autoload]
+
+StreamEmber="*res://addons/streamember/streamember.gd"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/streamember/plugin.cfg")
