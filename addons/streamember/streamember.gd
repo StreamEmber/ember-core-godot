@@ -19,7 +19,7 @@ signal connection_changed(connected: bool)
 ## Status texts the core shows (connected, test hotkeys, problems). level: 0 info, 1 warning, 2 error.
 signal notified(text: String, level: int)
 
-const VERSION := "0.2.0"
+const VERSION := "0.3.0"
 const SOURCE := "godot"
 const MODULE_PATH := "res://streamember/streamember-module.json"
 const SCHEMA_PATH := "res://streamember/game-schema.json"
@@ -73,6 +73,8 @@ var live_connected: bool:
 var can_write: bool:
 	get:
 		return _peek_token() != null
+## While true, live actions wait in the queue (menus, cutscenes, loading). A paused tree does the same.
+var hold_actions := false
 
 signal _token_done
 
@@ -147,6 +149,11 @@ func reset_gcore(done: Callable = Callable()) -> void:
 
 # ─── Lifecycle ───────────────────────────────────────────────────────────────
 
+func _ready() -> void:
+	# Connection, presence and hotkeys keep running while the game is paused; actions wait in the queue.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+
+
 func _process(_delta: float) -> void:
 	if not _activated:
 		# First frame: the scene's _ready() handlers are registered by now.
@@ -163,7 +170,7 @@ func _process(_delta: float) -> void:
 		_next_settings = now + float(_config.settings_seconds)
 		_refresh_settings(false)
 	for i in ACTIONS_PER_FRAME:
-		if _incoming.is_empty():
+		if _incoming.is_empty() or not _can_dispatch():
 			break
 		_dispatch(_Action.new(_incoming.pop_front(), false))
 
@@ -467,6 +474,20 @@ func _from_network(json: Dictionary) -> void:
 	_incoming.append(json)
 
 
+## Actions wait while the tree is paused, hold_actions is set, or no handler is registered yet
+## (a menu or loading scene before the gameplay scene's _ready).
+func _can_dispatch() -> bool:
+	if hold_actions or (is_inside_tree() and get_tree().paused):
+		return false
+	if not action_received.get_connections().is_empty():
+		return true
+	for list in _handlers.values():
+		for handler in list:
+			if handler.is_valid():
+				return true
+	return false
+
+
 func _dispatch(action: _Action) -> void:
 	if manifest == null:
 		return
@@ -512,9 +533,9 @@ func _hotkey(index: int) -> void:
 			"viewer": {"id": "streamember", "username": "streamember", "nickname": "Test"},
 		}, true))
 	elif index == 9:
-		_notify("%s | müşteri: %s | EventFabric: %s | yazma: %s | ayarlar: %s" % [manifest.name,
+		_notify("%s | müşteri: %s | EventFabric: %s | yazma: %s | ayarlar: %s | kuyruk: %d" % [manifest.name,
 			customer_uuid.substr(0, 8) + "…" if customer_uuid != "" else "yok",
-			"bağlı" if live_connected else "bağlı değil", "var" if can_write else "yok", settings_revision])
+			"bağlı" if live_connected else "bağlı değil", "var" if can_write else "yok", settings_revision, _incoming.size()])
 	elif index == 10:
 		_refresh_settings(true)
 		_notify("Ayarlar yeniden yükleniyor")

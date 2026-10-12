@@ -4,7 +4,7 @@ extends Node
 ## (Project → Tools → "StreamEmber Live: check for updates") and by update.gd on the command line.
 ## Releases are the GitHub Releases of ember-core-godot; CI creates one only when the tests pass.
 
-const REPO := "StreamEmberPlatform/ember-core-godot"
+const REPO := "StreamEmber/ember-core-godot"
 const TARGET := "res://addons/streamember"
 const ZIP_TEMP := "user://streamember-update.zip"
 
@@ -21,7 +21,12 @@ func fetch_release(version := "") -> Dictionary:
 	var json = JSON.parse_string(answer.body.get_string_from_utf8())
 	if not json is Dictionary or not json.has("tag_name") or not json.has("zipball_url"):
 		return {"error": "unexpected answer from " + url}
-	return {"version": str(json.tag_name).trim_prefix("v"), "zip_url": str(json.zipball_url),
+	# The CI-built asset is exactly what the tests ran on; the source zip is the fallback.
+	var zip_url := str(json.zipball_url)
+	for asset in json.get("assets", []):
+		if asset is Dictionary and str(asset.get("name", "")).begins_with("streamember-godot-"):
+			zip_url = str(asset.get("browser_download_url", zip_url))
+	return {"version": str(json.tag_name).trim_prefix("v"), "zip_url": zip_url,
 		"notes_url": str(json.get("html_url", "")), "error": ""}
 
 
@@ -103,11 +108,20 @@ static func install(files: Dictionary, target := TARGET) -> String:
 	for relative in files:
 		var path: String = target.path_join(relative)
 		DirAccess.make_dir_recursive_absolute(path.get_base_dir())
-		var out := FileAccess.open(path, FileAccess.WRITE)
+		var out := FileAccess.open(path + ".new", FileAccess.WRITE)
 		if out == null:
-			return "cannot write %s (%s)" % [path, error_string(FileAccess.get_open_error())]
+			var problem := "cannot write %s (%s)" % [path, error_string(FileAccess.get_open_error())]
+			for written in files:
+				DirAccess.remove_absolute(target.path_join(written) + ".new")
+			return problem
 		out.store_buffer(files[relative])
 		out.close()
+	# Old files are replaced only after every new one is on disk, so a failed write leaves the old version intact.
+	for relative in files:
+		var path: String = target.path_join(relative)
+		var error := DirAccess.rename_absolute(path + ".new", path)
+		if error != OK:
+			return "cannot replace %s (%s)" % [path, error_string(error)]
 	var old := {}
 	_collect(target, "", old, false)
 	for relative in old:

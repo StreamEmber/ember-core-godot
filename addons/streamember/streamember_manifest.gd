@@ -106,7 +106,7 @@ func action_label(action_id: String, language: String) -> String:
 
 static func _read(path: String):
 	if not FileAccess.file_exists(path):
-		return "%s is missing (export filter: add streamember/*.json to non-resource files)" % path
+		return "%s is missing (the StreamEmber Live plugin exports it; is the plugin enabled?)" % path
 	var text := FileAccess.get_file_as_string(path)
 	var parsed = _J.parse(text)
 	if not (parsed is Dictionary):

@@ -10,13 +10,13 @@ işler.
 
 ## Kurulum (yeni Godot oyunu)
 
-1. [Releases](https://github.com/StreamEmberPlatform/ember-core-godot/releases/latest) sayfasından
+1. [Releases](https://github.com/StreamEmber/ember-core-godot/releases/latest) sayfasından
    `streamember-godot-X.Y.Z.zip` indir, oyunun proje köküne aç (`addons/streamember/` oluşur);
    Project → Project Settings → Plugins → **StreamEmber Live** aç.
    Eklenti `StreamEmber` autoload'unu ve `streamember/*` proje ayarlarını ekler.
 2. `res://streamember/streamember-module.json`: `applicationUuid` (Falcon oyun UUID'si), `code` (kebab-case), `name`.
 3. `res://streamember/game-schema.json`: aksiyonlar ve ayarlar (GTA V/RDR2 şablonlarıyla aynı biçim; Falcon'a da bu yazılır).
-4. Export: Export → Resources → "Filters to export non-resource files" alanına `streamember/*.json` ekle.
+4. Export'ta ek ayar gerekmez: eklenti `streamember/*.json` dosyalarını kendisi pakete koyar.
 5. `addons/streamember/` oyunun reposuna commit'lenir (klonlayan herkes aynı sürümle açar), ama **elle değiştirilmez**:
    düzeltme bu repoya gelir, oyunlara güncellemeyle gider.
 
@@ -64,6 +64,7 @@ func _drop_boxes(action: StreamEmberAction) -> void:
 | `on(id, handler)`, `off(id, handler)` | Aksiyon handler'ı (ana thread'de çalışır) |
 | `live_started`, `live_stopped`, `action_received(action)`, `settings_changed(settings)`, `connection_changed(connected)`, `notified(text, level)` | Sinyaller |
 | `settings`, `settings_revision`, `manifest`, `customer_uuid`, `application_uuid`, `language`, `is_active`, `live_connected`, `can_write` | Durum |
+| `hold_actions` | `true` iken aksiyonlar kuyrukta bekler (menü, ara sahne, yükleme) |
 | `reload_settings()`, `reset_gcore(done)` | Ayarları hemen oku; GCore sayaçlarını sıfırla |
 | `StreamEmberAction` | `action`, `arguments`, `quantity`, `viewer` (`display_name`, `username`, `avatar_url`), `gift`, `trigger`, `comment`, `like_count`, `is_test`, `render("{user} {gift}")`, `describe()` |
 | `StreamEmberValues` | Noktalı yol: `get_int/get_float(path, fallback, min, max)`, `get_bool`, `get_string`, `get_string_list`, `get_object` |
@@ -91,6 +92,10 @@ Log: `user://logs/streamember.log` (her açılışta yeniden başlar) + konsol, 
 4. Falcon `/public/game/config/{müşteri}/{oyun}`: hemen ve 60 sn'de bir; şema varsayılanlarıyla derin birleştirme.
 5. Her 15 sn: presence (Launcher'dan alınan runtime token ile), Launcher `/api/active-application`.
 6. Başka oyuna ait aksiyon atılır; şema argüman varsayılanları eklenir; handler'lar çalışır, sonra `action_received`.
+7. Oyun duraklatılınca (`get_tree().paused`) bağlantı, presence ve kısayollar çalışmaya devam eder; aksiyonlar kuyrukta
+   bekler. Kuyruk ayrıca `hold_actions = true` iken ve hiç handler kayıtlı değilken (oyun sahnesi açılmadan önceki menü)
+   bekler; oyun sahnesi `StreamEmber.on(...)` yaptığı anda sırayla, kare başına 25 tane işlenir.
+   Sahne değişince yeni sahne güncel ayarları `StreamEmber.settings`'ten okur (`settings_changed` yalnız değişince gelir).
 
 Token yalnız `Authorization` başlığında gider, loglanmaz; istemci doğrulamaz (doğrulama sunucudadır).
 

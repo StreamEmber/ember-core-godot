@@ -3,6 +3,15 @@
 Sürüm kuralı: PATCH hata düzeltmesi, MINOR geriye uyumlu yenilik, MAJOR oyun kodunu bozabilecek değişiklik
 (başlıkta **Uyumsuz** yazılır ve geçiş adımı verilir).
 
+## 0.3.0 — 2026-10-12
+
+- Oyun duraklatıldığında canlı bağlantı durmaz (autoload `PROCESS_MODE_ALWAYS`); aksiyonlar kuyrukta bekler, oyun devam edince işlenir.
+- Aksiyonlar menüde de kaybolmaz: hiç handler kayıtlı değilken veya `StreamEmber.hold_actions = true` iken kuyrukta bekler
+  (en fazla 2048). Yeni üye: `hold_actions`. F10 durumunda kuyruk uzunluğu görünür.
+- Export: `streamember/*.json` eklenti tarafından otomatik pakete eklenir; elle eklenen export filtresi artık gereksiz (kaldırılabilir).
+- Güncelleyici: repo `StreamEmber/ember-core-godot`; CI'ın ürettiği release zip'i indirilir; dosyalar önce `.new` olarak
+  yazılır, hepsi yazılınca eskilerin yerine geçer (yarıda kalan güncelleme eski sürümü bozmaz).
+
 ## 0.2.0 — 2026-10-10
 
 - Merkezi güncelleme: editör günde bir GitHub Releases'ı denetler, yeni sürümü tek tıkla kurup editörü yeniden başlatır

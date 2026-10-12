@@ -45,7 +45,8 @@ tests/e2e/                       fake services + scene; run.sh asserts the full 
 
 Same as the GTA V / RDR2 mod templates: one handler per schema action (`StreamEmber.on`), amounts
 `mini(cap, argument * action.quantity)`, bounded queues and alive counts, work spread over frames, everything created
-removed in `live_stopped`, settings applied in `settings_changed` with the schema's paths/defaults/limits, viewer text
+removed in `live_stopped` (actions wait in the core's queue while paused, while `hold_actions` is set, or before any
+handler is registered — games don't queue for menus themselves), settings applied in `settings_changed` with the schema's paths/defaults/limits, viewer text
 cut in length, schema ids never renamed after release, `tr` + `en` labels.
 
 ## Checks before done

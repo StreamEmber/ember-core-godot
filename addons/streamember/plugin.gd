@@ -13,6 +13,7 @@ const Updater := preload("updater.gd")
 var _updater: Updater
 var _dialog: AcceptDialog
 var _release := {}
+var _export: _ExportManifest
 
 
 func _enable_plugin() -> void:
@@ -28,6 +29,8 @@ func _enter_tree() -> void:
 	for key in defaults:
 		_add_setting("streamember/" + key, defaults[key])
 	_add_setting(CHECK_UPDATES, true)
+	_export = _ExportManifest.new()
+	add_export_plugin(_export)
 
 	_updater = Updater.new()
 	add_child(_updater)
@@ -39,6 +42,7 @@ func _enter_tree() -> void:
 
 func _exit_tree() -> void:
 	remove_tool_menu_item(MENU_ITEM)
+	remove_export_plugin(_export)
 	if _dialog != null:
 		_dialog.queue_free()
 	_updater.queue_free()
@@ -100,3 +104,15 @@ func _show(text: String, confirm := false) -> AcceptDialog:
 	EditorInterface.get_base_control().add_child(_dialog)
 	_dialog.popup_centered()
 	return _dialog
+
+
+## streamember/*.json are not resources; this ships them with every export (no export filter needed).
+class _ExportManifest extends EditorExportPlugin:
+	func _get_name() -> String:
+		return "StreamEmber Live"
+
+	func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
+		var core = load(CORE_PATH)
+		for path in [core.MODULE_PATH, core.SCHEMA_PATH]:
+			if FileAccess.file_exists(path):
+				add_file(path, FileAccess.get_file_as_bytes(path), false)

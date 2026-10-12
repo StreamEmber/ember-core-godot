@@ -152,6 +152,14 @@ func _test_core_queue() -> void:
 		core._dispatch(Action.new(core._incoming.pop_front()))
 	check(got.size() == 1, "other application's action ignored")
 	check(got[0].arguments.get_int("count") == 3 and got[0].handled, "schema argument default applied, handled")
+	check(core._can_dispatch(), "dispatch when a handler is registered")
+	core.hold_actions = true
+	check(not core._can_dispatch(), "hold_actions keeps actions queued")
+	core.hold_actions = false
+	var saved: Dictionary = core._handlers.duplicate(true)
+	core._handlers.clear()
+	check(not core._can_dispatch(), "no handler yet (menu): actions wait")
+	core._handlers = saved
 	for i in Core.MAX_PENDING_ACTIONS + 10:
 		core._from_network({"id": "q%d" % i})
 	check(core._incoming.size() == Core.MAX_PENDING_ACTIONS, "queue bounded")
@@ -198,6 +206,7 @@ func _test_updater() -> void:
 	check(FileAccess.file_exists(target.path_join("old.gd")), "refused install wrote nothing")
 	check(Updater.install(files, target) == "", "install")
 	check(Updater.installed_version(target) == "9.0.0", "installed version")
+	check(not FileAccess.file_exists(target.path_join("plugin.cfg.new")), "no .new files left")
 	check(FileAccess.get_file_as_string(target.path_join("sub/new.gd")) == "new", "new file in subfolder")
 	check(not FileAccess.file_exists(target.path_join("old.gd")) and not FileAccess.file_exists(target.path_join("old.gd.uid")), "removed files deleted")
 	check(FileAccess.file_exists(target.path_join("icon.svg.import")) and not FileAccess.file_exists(target.path_join("gone.png.import")), ".import kept only with its file")
