@@ -1,50 +1,74 @@
-# Tests on every push/PR; a v* tag that matches plugin.cfg becomes a GitHub Release.
-# Games' editors (and update.gd) install only from Releases, so a broken core never reaches them.
+# Push to main → if plugin.cfg's version has no Release yet: tests (Godot 4.3 + 4.7) → tag + GitHub Release.
+# Kept cheap: one runner, no caches or artifacts, only core files trigger it, a push without a version bump
+# finishes in seconds, and every run deletes the older runs (logs) of this repo.
 name: ci
 on:
   push:
     branches: [main]
-    tags: ['v*']
-  pull_request:
+    paths: ['addons/**', 'tests/**', 'demo/**', 'streamember/**', 'project.godot', 'CHANGELOG.md', '.github/workflows/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ci
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # tag + release
+  actions: write    # delete old runs
 
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        godot: ['4.3', '4.7']   # oldest supported, newest in use
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-      - name: Godot ${{ matrix.godot }}
-        run: |
-          curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/${{ matrix.godot }}-stable/Godot_v${{ matrix.godot }}-stable_linux.x86_64.zip"
-          unzip -q godot.zip && mv Godot_v*_linux.x86_64 godot && rm godot.zip
-      - name: Versions agree
+
+      - name: Version
+        id: v
         run: |
           v=$(sed -n 's/^version="\(.*\)"$/\1/p' addons/streamember/plugin.cfg)
           grep -q "^const VERSION := \"$v\"" addons/streamember/streamember.gd || { echo "streamember.gd VERSION != $v"; exit 1; }
           grep -q "^## $v " CHANGELOG.md || { echo "CHANGELOG.md has no '## $v' section"; exit 1; }
-          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$v" ]]; then echo "tag != plugin.cfg $v"; exit 1; fi
-      - run: ./godot --headless --path . --import || true
-      - run: ./godot --headless --path . -s res://tests/run_tests.gd
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "v$v" >/dev/null 2>&1; then
+            echo "v$v is already released; bump the version to release again."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.v.outputs.new == 'true'
         with:
           python-version: '3.12'
-      - run: pip install websockets && GODOT="$PWD/godot" bash tests/e2e/run.sh
 
-  release:
-    needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Tests
+        if: steps.v.outputs.new == 'true'
         run: |
-          v="${GITHUB_REF#refs/tags/v}"
+          pip install -q websockets
+          for g in 4.3 4.7; do
+            echo "::group::Godot $g"
+            curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/$g-stable/Godot_v$g-stable_linux.x86_64.zip"
+            unzip -qo godot.zip && rm godot.zip && mv "Godot_v$g-stable_linux.x86_64" godot
+            ./godot --headless --path . --import || true
+            ./godot --headless --path . -s res://tests/run_tests.gd
+            GODOT="$PWD/godot" bash tests/e2e/run.sh
+            rm -rf godot .godot
+            echo "::endgroup::"
+          done
+
+      - name: Release
+        if: steps.v.outputs.new == 'true'
+        run: |
+          v="${{ steps.v.outputs.version }}"
           awk -v h="## $v " 'index($0, h) == 1 {on = 1; next} /^## / {on = 0} on' CHANGELOG.md > notes.md
           zip -qr "streamember-godot-$v.zip" addons/streamember
-          gh release create "v$v" "streamember-godot-$v.zip" --title "StreamEmber Live $v" --notes-file notes.md
+          gh release create "v$v" "streamember-godot-$v.zip" --target "$GITHUB_SHA" --title "StreamEmber Live $v" --notes-file notes.md
+
+      - name: Delete older runs
+        if: always()
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?per_page=100" -q ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id" \
+            | xargs -r -I{} gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/{}" || true

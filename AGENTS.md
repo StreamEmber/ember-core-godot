@@ -36,8 +36,8 @@ tests/e2e/                       fake services + scene; run.sh asserts the full 
 7. Other teams' games update from GitHub Releases. Semver: PATCH fix, MINOR backward-compatible addition, MAJOR only
    when game code must change (mark it **Uyumsuz** in the changelog with the migration step). Never rename or remove
    a public member in a MINOR/PATCH; deprecate first.
-8. Release = push a `vX.Y.Z` tag matching `plugin.cfg`; `.github/workflows/ci.yml` tests (Godot 4.3 + 4.7) and
-   publishes. A new `.gd` file ships with its `.uid` (open the project once in Godot 4.4+).
+8. Release = bump the version and push to main; `.github/workflows/ci.yml` tests (Godot 4.3 + 4.7), creates the
+   `vX.Y.Z` tag and publishes. No version bump → no release, no tests. Never push tags by hand. A new `.gd` file ships with its `.uid` (open the project once in Godot 4.4+).
 9. Everything in `addons/streamember/` belongs to the core: the updater replaces the folder and deletes files a
    release no longer has. Game-specific files never go there.
 

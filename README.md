@@ -40,8 +40,10 @@ işler.
 
 1. Değişiklik + test; `streamember.gd` `VERSION` ve `plugin.cfg` `version` birlikte artar; `CHANGELOG.md`'ye `## X.Y.Z — tarih`.
 2. Yeni `.gd` dosyası eklediysen projeyi Godot 4.4+ ile bir kez açıp oluşan `.uid` dosyasını da commit'le.
-3. `git tag vX.Y.Z && git push origin main vX.Y.Z`. CI Godot 4.3 ve 4.7'de birim + uçtan uca testleri koşar, geçerse
-   GitHub Release'i (zip + CHANGELOG notu) açar. Oyunların editörleri yalnız Release'leri görür.
+3. `git push`. `plugin.cfg` sürümünün Release'i yoksa CI Godot 4.3 ve 4.7'de birim + uçtan uca testleri koşar, geçerse
+   `vX.Y.Z` etiketini ve GitHub Release'i (zip + CHANGELOG notu) kendisi açar. Sürüm artmadıysa CI hiçbir şey yapmaz.
+   Etiketi elle atma. Actions eski çalıştırmaları (logları) her seferinde siler; artifact/cache tutulmaz.
+   Oyunların editörleri yalnız Release'leri görür.
 
 ## Kullanım
 
