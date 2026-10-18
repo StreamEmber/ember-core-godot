@@ -3,6 +3,22 @@
 Sürüm kuralı: PATCH hata düzeltmesi, MINOR geriye uyumlu yenilik, MAJOR oyun kodunu bozabilecek değişiklik
 (başlıkta **Uyumsuz** yazılır ve geçiş adımı verilir).
 
+## 0.5.0 — 2026-10-17
+
+- API sözleşmesi: runtime token kaldırıldı; kimlik Launcher `GET /api/customer` (`customerUuid`, `secretKey`, `region.eventFabricUrl`).
+  Yazmalar `?key=`; EventFabric adresi yayıncının bölgesinden, her bağlantıda yeniden okunur. Yollar `/presence/report`, `/sessions/reset`,
+  Falcon `/public/customers/{c}/applications/{a}/config`. `config.changed` → ayar yenileme; `settings_seconds` varsayılanı 600.
+- Proje ayarları: `secret_key` (geliştirme) eklendi; `eventfabric_url` artık yalnız geliştirme (varsayılan boş).
+- `parse_jwt` kaldırıldı; `event_fabric_client` ilk argüman olarak adres çözücü `Callable` alır (yalnız çekirdeğin iç kullanımı).
+
+## 0.4.0 — 2026-10-14
+
+- Takımlar: `action.viewer.team` (`StreamEmberAction.Team`: `id`, `code`, `name`, `short_name`, `primary_color`,
+  `secondary_color`, `logo_url`) izleyicinin takımıdır; GCore yorumdaki takım adı / kısa ad / anahtar kelimeden seçer, seçmeyeni
+  ilk aksiyonunda en küçük takıma atar. Oyun ayarında takım yoksa `null`.
+- Yeni üye: `StreamEmber.teams` — Falcon ayarındaki aktif takımlar (sıralı); `settings_changed` ile birlikte güncellenir.
+- Şablonlarda `{team}` (izleyicinin takım adı).
+
 ## 0.3.0 — 2026-10-12
 
 - Oyun duraklatıldığında canlı bağlantı durmaz (autoload `PROCESS_MODE_ALWAYS`); aksiyonlar kuyrukta bekler, oyun devam edince işlenir.

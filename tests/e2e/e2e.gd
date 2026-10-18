@@ -17,6 +17,7 @@ func _ready() -> void:
 	await get_tree().create_timer(1.5).timeout
 	_result["can_write"] = StreamEmber.can_write
 	_result["customer"] = StreamEmber.customer_uuid
+	_result["teams"] = StreamEmber.teams.map(func(team) -> String: return team.code)
 	var file := FileAccess.open(OS.get_environment("SE_E2E_OUT"), FileAccess.WRITE)
 	file.store_string(JSON.stringify(_result, " "))
 	file.close()

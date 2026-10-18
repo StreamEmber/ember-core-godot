@@ -19,7 +19,7 @@ signal connection_changed(connected: bool)
 ## Status texts the core shows (connected, test hotkeys, problems). level: 0 info, 1 warning, 2 error.
 signal notified(text: String, level: int)
 
-const VERSION := "0.3.0"
+const VERSION := "0.5.0"
 const SOURCE := "godot"
 const MODULE_PATH := "res://streamember/streamember-module.json"
 const SCHEMA_PATH := "res://streamember/game-schema.json"
@@ -27,8 +27,15 @@ const LOG_PATH := "user://logs/streamember.log"
 const REMEMBERED_IDS := 4096
 const ACTIONS_PER_FRAME := 25
 const MAX_PENDING_ACTIONS := 2048
-const TOKEN_REFRESH_MARGIN := 120.0
-const TOKEN_USE_MARGIN := 30.0
+## In-game texts for the few error codes a streamer sees (contract: servers send codes, clients translate).
+const MESSAGES := {
+	"launcher_unreachable": ["Open StreamEmber Launcher and sign in for live actions", "Canlı aksiyonlar için StreamEmber Launcher'ı aç ve giriş yap"],
+	"signed_out": ["Sign in to StreamEmber Launcher for live actions", "Canlı aksiyonlar için Launcher'da giriş yap"],
+	"invalid_key": ["Launcher secret key rejected; restart the launcher", "Launcher gizli anahtarı reddedildi; launcher'ı yeniden başlat"],
+	"key_rotated": ["Secret key renewed; reconnecting", "Gizli anahtar yenilendi; yeniden bağlanılıyor"],
+	"wrong_region": ["Region changed; reconnecting to the new EventFabric", "Bölge değişti; yeni EventFabric'e bağlanılıyor"],
+	"no_write": ["No secret key; actions arrive, writes are off", "Gizli anahtar yok; aksiyonlar gelir, yazma kapalı"],
+}
 const INFO := 0
 const WARNING := 1
 const ERROR := 2
@@ -36,12 +43,13 @@ const ERROR := 2
 ## Project Settings → streamember/<key> (Runtime.ini "Live*" keys in the GTA V / RDR2 runtimes).
 const DEFAULTS := {
 	"enabled": true,
-	"eventfabric_url": "https://eventfabric.streamember.com",
+	"eventfabric_url": "",  # development only: normally the launcher gives the URL of the streamer's region
 	"falcon_url": "https://falcon.streamember.com",
 	"launcher_url": "http://127.0.0.1:47880",
 	"customer_uuid": "",  # development only: read events/settings without the launcher
+	"secret_key": "",  # development only: "sek_…" so writes (presence, session reset) work without the launcher
 	"presence_seconds": 15,
-	"settings_seconds": 60,
+	"settings_seconds": 600,
 	"announce_actions": true,
 	"test_hotkeys": true,
 	"show_notifications": true,
@@ -61,6 +69,9 @@ var customer_uuid := ""
 ## Current settings: schema defaults merged with the streamer's Falcon config.
 var settings: _Values = _Values.new()
 var settings_revision := "schema"
+## Active teams of the streamer's config, in order (StreamEmberAction.Team); empty when the game has no teams.
+## Updated with the settings (settings_changed). Actions carry the viewer's team as action.viewer.team.
+var teams: Array = []
 ## Two-letter UI language of the player's system ("tr", "en"…).
 var language := "en"
 var application_uuid: String:
@@ -69,14 +80,12 @@ var application_uuid: String:
 var live_connected: bool:
 	get:
 		return _client != null and _client.connected
-## True while a valid runtime token is cached (presence and GCore reset need one).
+## The launcher gave the secret key and EventFabric URL (presence and session reset need them).
 var can_write: bool:
 	get:
-		return _peek_token() != null
+		return _secret_key != "" and _eventfabric_url != ""
 ## While true, live actions wait in the queue (menus, cutscenes, loading). A paused tree does the same.
 var hold_actions := false
-
-signal _token_done
 
 var _config := {}
 var _activated := false
@@ -90,12 +99,14 @@ var _overflow_count := 0
 var _client: _Client
 var _customer_source := ""
 var _customer_problem := ""
-var _token: Dictionary = {}
-var _token_problem := ""
-var _token_busy := false
+## "sek_…" from the launcher; never logged. Empty = read only.
+var _secret_key := ""
+## Root URL of the EventFabric of the streamer's region (from the launcher); empty = unknown.
+var _eventfabric_url := ""
+var _region_code := ""
 var _resolving := false
 var _warned_no_customer := false
-var _warned_no_token := false
+var _warned_no_write := false
 var _announced_connection := false
 var _settings_fingerprint := ""
 var _next_presence := 0.0
@@ -127,22 +138,19 @@ func reload_settings() -> void:
 		_refresh_settings(true)
 
 
-## Resets GCore counters (aggregation, cooldown) for this streamer and game. done: func(ok: bool).
+## Resets the live session (GCore counters: aggregation, cooldown) for this streamer and game. done: func(ok: bool).
 func reset_gcore(done: Callable = Callable()) -> void:
 	var ok := false
 	if _activated and customer_uuid != "":
-		var url: String = _config.eventfabric_url + "/gcore/reset?customerUuid=" + customer_uuid.uri_encode() \
-			+ "&applicationUuid=" + application_uuid.uri_encode()
-		var token := await _get_token()
-		if token.is_empty():
-			_log("warn", "GCore reset needs a runtime token (%s)." % _token_problem)
+		if not can_write:
+			_log("warn", "Session reset needs the secret key and EventFabric URL.")
 		else:
-			var response := await _get_json(url, token.value)
+			var url: String = _eventfabric_url + "/sessions/reset?applicationUuid=" + application_uuid.uri_encode() \
+				+ "&key=" + _secret_key.uri_encode()
+			var response := await _get_json(url)
 			ok = response.ok
-			if response.status == 401:
-				_token = {}
 			if not ok:
-				_log("warn", "GCore reset failed: " + response.error)
+				_log("warn", "Session reset failed: " + response.error)
 	if done.is_valid():
 		done.call(ok)
 
@@ -202,6 +210,7 @@ func _activate() -> void:
 	for key in ["eventfabric_url", "falcon_url", "launcher_url"]:
 		var url := str(_config[key]).strip_edges().trim_suffix("/")
 		_config[key] = url if url != "" else DEFAULTS[key]
+	_config.secret_key = str(_config.secret_key).strip_edges()
 	_config.presence_seconds = clampi(int(_config.presence_seconds), 5, 300)
 	_config.settings_seconds = clampi(int(_config.settings_seconds), 10, 3600)
 	_open_log()
@@ -218,8 +227,9 @@ func _activate() -> void:
 	manifest = loaded
 	language = OS.get_locale_language()
 	settings = manifest.setting_defaults_values()
-	_settings_fingerprint = _J.stable_text(settings.raw())
+	_settings_fingerprint = _J.stable_text(settings.raw()) + _J.stable_text([])
 	settings_revision = "schema"
+	teams = []
 	_activated = true
 	is_active = true
 	_log("info", "Module '%s' (%s) active; StreamEmber for Godot %s, Godot %s." % [
@@ -249,188 +259,159 @@ func _resolve_identity() -> void:
 	var found := await _find_customer()
 	_resolving = false
 	if _activated:
-		_identity_resolved(found[0], found[1])
+		_identity_resolved(found)
 
 
-## [customer uuid or "", source]. Project setting (development) → launcher /api/customer → token sub.
-func _find_customer() -> Array:
+## {uuid, secret_key, eventfabric_url, region, source} or {} when unknown.
+## Project settings (development) → launcher GET /api/customer (customer UUID, secret key, region EventFabric URL).
+func _find_customer() -> Dictionary:
 	var configured := _J.normalize_uuid(str(_config.customer_uuid))
 	if configured != "":
 		_customer_problem = ""
-		return [configured, "config"]
+		var url := str(_config.eventfabric_url)
+		if url == "":
+			var region := await _get_json(_config.falcon_url + "/public/customers/" + configured.uri_encode() + "/region")
+			if region.ok:
+				url = _J.text(region.json, "eventFabricUrl").trim_suffix("/")
+			else:
+				_log("warn", "Region of the configured customer could not be read from Falcon: " + region.error)
+		return {"uuid": configured, "secret_key": str(_config.secret_key), "eventfabric_url": url, "region": "", "source": "config"}
 	var response := await _get_json(_config.launcher_url + "/api/customer")
 	if response.ok:
 		var uuid := _J.normalize_uuid(_J.text(response.json, "customerUuid"))
 		if uuid != "":
 			_customer_problem = ""
-			return [uuid, "launcher"]
+			var region = response.json.get("region")
+			var url := _J.text(region, "eventFabricUrl").trim_suffix("/") if region is Dictionary else ""
+			if str(_config.eventfabric_url) != "":
+				url = str(_config.eventfabric_url)
+			return {"uuid": uuid, "secret_key": _J.text(response.json, "secretKey"), "eventfabric_url": url,
+				"region": _J.text(region, "code") if region is Dictionary else "", "source": "launcher"}
 		_customer_problem = "signed_out"
 	else:
-		_customer_problem = "signed_out" if response.status > 0 else "launcher_offline"
+		_customer_problem = "signed_out" if response.status > 0 else "launcher_unreachable"
 		_log("debug", "Launcher customer not available: " + response.error)
-	var token := _peek_token()
-	return [token.sub, "token"] if not token.is_empty() else ["", ""]
+	return {}
 
 
-func _identity_resolved(customer: String, source: String) -> void:
-	if customer == "":
+func _identity_resolved(found: Dictionary) -> void:
+	if found.is_empty():
 		if not _warned_no_customer:
 			_warned_no_customer = true
-			var offline := _customer_problem == "launcher_offline"
-			_log("warn", "No customer UUID (%s). Retrying every %d s." % [
+			var offline := _customer_problem == "launcher_unreachable"
+			_log("warn", "No customer (%s). Retrying every %d s." % [
 				"launcher not reachable at " + _config.launcher_url if offline else "launcher not signed in", _config.presence_seconds])
-			_notify("Canlı aksiyonlar için StreamEmber Launcher'ı aç ve giriş yap" if offline
-				else "Canlı aksiyonlar için Launcher'da giriş yap", ERROR if offline else WARNING)
+			_notify(_message("launcher_unreachable" if offline else "signed_out"), ERROR if offline else WARNING)
 		return
-	if customer == customer_uuid and _client != null:
+	var customer: String = found.uuid
+	var same := customer == customer_uuid and found.secret_key == _secret_key and found.eventfabric_url == _eventfabric_url
+	if same and _client != null:
 		return
+	var same_uuid := customer == customer_uuid
 	_warned_no_customer = false
-	_customer_source = source
+	if found.secret_key != "" and found.secret_key != _secret_key:
+		_warned_no_write = false
+	_customer_source = found.source
 	customer_uuid = customer
-	_log("info", "Customer %s (%s)." % [customer, source])
+	_secret_key = found.secret_key
+	_eventfabric_url = found.eventfabric_url
+	_region_code = found.region
+	_log("info", "Customer %s (%s, region %s, EventFabric %s, write %s)." % [customer, found.source,
+		_region_code if _region_code != "" else "?", _eventfabric_url if _eventfabric_url != "" else "?", "on" if can_write else "off"])
+	if same_uuid and _client != null:
+		return  # only key/URL changed: the client asks for the URL again on its next connect
 	if _client != null:
 		_client.stop()
 	_announced_connection = false
-	var ws_base: String = _config.eventfabric_url.replace("https://", "wss://").replace("http://", "ws://")
-	_client = _Client.new(ws_base, customer, manifest.application_uuid, _log)
+	_client = _Client.new(_resolve_ws_base, customer, manifest.application_uuid, _log)
 	_client.action_received.connect(_from_network)
 	_client.connection_changed.connect(_on_connection_changed.bind(_client))
+	_client.config_changed.connect(_on_config_changed.bind(_client))
+	_client.identity_rejected.connect(_on_identity_rejected.bind(_client))
 	_next_presence = 0.0
 	_refresh_settings(true)
 	_next_settings = _now() + float(_config.settings_seconds)
+
+
+## Before every EventFabric connect: ask the launcher again (region / key may have changed). "" = unknown.
+func _resolve_ws_base() -> String:
+	var found := await _find_customer()
+	if not found.is_empty() and _activated:
+		_identity_resolved(found)
+	var url := _eventfabric_url
+	return url.replace("https://", "wss://").replace("http://", "ws://") if url != "" else ""
 
 
 func _on_connection_changed(connected: bool, client: _Client) -> void:
 	if client != _client or not _activated:
 		return
 	connection_changed.emit(connected)
-	if connected and not _announced_connection:
+	if not connected:
+		return
+	_refresh_settings(false)  # a config.changed sent while disconnected is not replayed
+	_next_settings = _now() + float(_config.settings_seconds)
+	if not _announced_connection:
 		_announced_connection = true
 		_notify(manifest.name + " canlı yayına bağlandı")
 
 
-## Presence (needs a runtime token), launcher notification and a fresh customer lookup.
+func _on_config_changed(client: _Client) -> void:
+	if client == _client and _activated:
+		_refresh_settings(false)
+
+
+func _on_identity_rejected(code: String, client: _Client) -> void:
+	if client != _client or not _activated:
+		return
+	_notify(_message(code), WARNING)
+	_resolve_identity()
+
+
+## Presence report (needs the secret key), launcher notification and a fresh customer lookup.
 func _heartbeat() -> void:
 	if customer_uuid == "" or _customer_source != "config":
 		_resolve_identity()
 	if customer_uuid == "":
 		return
-	var customer := customer_uuid
 	var application := application_uuid
-	var presence_url: String = _config.eventfabric_url + "/presence?customerUuid=" + customer.uri_encode() \
-		+ "&applicationUuid=" + application.uri_encode() + "&source=" + SOURCE
-	var notify_launcher := _customer_problem != "launcher_offline"
-	var token := await _get_token()
-	if token.is_empty():
+	if not can_write:
 		_no_write_access()
-	elif token.sub != customer:
-		_log("warn", "The runtime token is for customer %s, not %s; presence skipped." % [token.sub, customer])
-	else:
-		var response := await _get_json(presence_url, token.value)
-		if response.ok:
-			_warned_no_token = false
-		else:
-			if response.status == 401:
-				_token = {}
-			_log("debug", "Presence failed: " + response.error)
-	if notify_launcher and _activated:
-		await _get_json(_config.launcher_url + "/api/active-application?applicationUuid=" + application.uri_encode() + "&source=" + SOURCE)
+		return
+	var key := _secret_key
+	var response := await _get_json(_eventfabric_url + "/presence/report?applicationUuid=" + application.uri_encode() \
+		+ "&source=" + SOURCE + "&key=" + key.uri_encode())
+	if not response.ok:
+		_log("debug", "Presence failed: " + response.error)
+		if response.code in ["wrong_region", "invalid_key", "key_rotated"] and _activated:
+			_on_identity_rejected(response.code, _client)
+	if _customer_source == "launcher" and _activated:
+		await _get_json(_config.launcher_url + "/api/active-application?applicationUuid=" + application.uri_encode() \
+			+ "&source=" + SOURCE + "&key=" + key.uri_encode())
 
 
 func _no_write_access() -> void:
-	if _warned_no_token:
+	if _warned_no_write:
 		return
-	_warned_no_token = true
-	_log("warn", "No runtime token (%s): presence and other EventFabric writes are skipped. Live actions still arrive." % _token_problem)
-	_notify("Launcher yetki doğrulaması başarısız (%s); aksiyonlar gelir, yazma kapalı" % _token_problem, WARNING)
+	_warned_no_write = true
+	_log("warn", "No secret key / EventFabric URL: presence and other EventFabric writes are skipped. Live actions still arrive.")
+	_notify(_message("no_write"), WARNING)
 
 
-# ─── Runtime token (Identity v2) ─────────────────────────────────────────────
-
-## Cached token still valid for a while, without a request. {} when none.
-func _peek_token() -> Dictionary:
-	return _token if _usable(_token, TOKEN_USE_MARGIN) else {}
-
-
-## Token for a write, refreshed ~2 min before it expires. {} when none can be obtained.
-func _get_token(force: bool = false) -> Dictionary:
-	if not force and _usable(_token, TOKEN_REFRESH_MARGIN):
-		return _token
-	if _token_busy:
-		await _token_done
-		return _peek_token()
-	_token_busy = true
-	var url: String = _config.launcher_url + "/api/runtime-token?audience=eventfabric&applicationUuid=" + application_uuid.uri_encode()
-	var response := await _get_json(url)
-	var problem := ""
-	if response.ok:
-		var token := parse_jwt(_J.text(response.json, "token"), _J.number(response.json, "expiresIn"))
-		if token.is_empty():
-			problem = "token_error"
-			_log("debug", "The launcher answered without a runtime token.")
-		elif not _usable(token, 0.0):
-			problem = "token_error"
-			_log("debug", "The runtime token is expired or for another application (%s)." % token.app)
-		else:
-			_token = token
-			if _token_problem != "":
-				_log("info", "Runtime token available again.")
-			_log("debug", "Runtime token refreshed; scope '%s'." % token.scope)
-	elif response.status == 401:
-		problem = "no_session"
-	elif response.status > 0:
-		problem = "token_error"
-	else:
-		problem = "launcher_offline"
-	if problem != "" and problem != _token_problem:
-		_log("warn", "Runtime token not available (%s): %s" % [problem, response.error])
-	_token_problem = problem
-	_token_busy = false
-	_token_done.emit()
-	return _peek_token()
-
-
-func _usable(token: Dictionary, margin: float) -> bool:
-	if token.is_empty() or Time.get_unix_time_from_system() + margin >= float(token.exp):
-		return false
-	return token.app == "" or token.app == application_uuid
-
-
-## Reads (does not verify) an ES256 runtime token: {value, sub, app, exp, scope}; {} when not a JWT with a sub.
-static func parse_jwt(jwt: String, fallback_expires_in: float = 0.0) -> Dictionary:
-	var parts := jwt.strip_edges().split(".")
-	if parts.size() != 3:
-		return {}
-	var payload_b64 := parts[1].replace("-", "+").replace("_", "/")
-	while payload_b64.length() % 4 != 0:
-		payload_b64 += "="
-	var payload = _J.parse(Marshalls.base64_to_raw(payload_b64).get_string_from_utf8())
-	if not (payload is Dictionary):
-		return {}
-	var subject := _J.normalize_uuid(_J.text(payload, "sub"))
-	if subject == "":
-		return {}
-	var exp := _J.number(payload, "exp")
-	if exp <= 0.0:
-		exp = Time.get_unix_time_from_system() + (fallback_expires_in if fallback_expires_in > 0.0 else 300.0)
-	return {
-		"value": jwt.strip_edges(),
-		"sub": subject,
-		"app": _J.normalize_uuid(_J.text(payload, "app")),
-		"exp": exp,
-		"scope": _J.text(payload, "scope"),
-	}
+func _message(code: String) -> String:
+	if not MESSAGES.has(code):
+		return code
+	return MESSAGES[code][1] if language == "tr" else MESSAGES[code][0]
 
 
 # ─── Settings ────────────────────────────────────────────────────────────────
 
-## Falcon public config → settings. Reading needs no token.
+## Falcon public config → settings. Reading needs no key.
 func _refresh_settings(notify_always: bool) -> void:
 	if customer_uuid == "" or manifest == null:
 		return
 	var customer := customer_uuid
 	var current := manifest
-	var url: String = _config.falcon_url + "/public/game/config/" + customer.uri_encode() + "/" + current.application_uuid.uri_encode()
+	var url: String = _config.falcon_url + "/public/customers/" + customer.uri_encode() + "/applications/" + current.application_uuid.uri_encode() + "/config"
 	var response := await _get_json(url)
 	if customer != customer_uuid or current != manifest or not _activated:
 		return
@@ -447,11 +428,16 @@ func _apply_config(config: Dictionary) -> bool:
 	var merged := _J.merge(manifest.setting_defaults(), _J.obj(config, "settings"))
 	var revision := _J.text(config, "revision")
 	settings_revision = revision if revision != "" else "unknown"
-	var fingerprint := _J.stable_text(merged)
+	var team_list: Array = config.get("teams") if config.get("teams") is Array else []
+	var fingerprint := _J.stable_text(merged) + _J.stable_text(team_list)
 	if fingerprint == _settings_fingerprint:
 		return false
 	_settings_fingerprint = fingerprint
 	settings = _Values.new(merged)
+	teams = []
+	for item in team_list:
+		if item is Dictionary:
+			teams.append(_Action.Team.new(item))
 	return true
 
 
@@ -515,7 +501,7 @@ func _dispatch(action: _Action) -> void:
 		_log("warn", "Module '%s' has no handler for action '%s'. Check game-schema.json and StreamEmber.on(...)." % [manifest.code, action.action])
 
 
-## Ctrl+Shift+F1…F9: schema action (test), F10 status, F11 reload settings, F12 GCore reset.
+## Ctrl+Shift+F1…F9: schema action (test), F10 status, F11 reload settings, F12 session reset.
 func _hotkey(index: int) -> void:
 	if index <= 8:
 		if index >= manifest.action_ids.size():
@@ -541,32 +527,35 @@ func _hotkey(index: int) -> void:
 		_notify("Ayarlar yeniden yükleniyor")
 	elif index == 11:
 		reset_gcore(func(ok: bool) -> void:
-			_notify("GCore sıfırlandı" if ok else "GCore sıfırlanamadı", INFO if ok else ERROR))
+			_notify("Oturum sıfırlandı" if ok else "Oturum sıfırlanamadı", INFO if ok else ERROR))
 
 
 # ─── HTTP, log, notifications ────────────────────────────────────────────────
 
 ## GET → {ok, status (0 = no answer), json, error}. The token goes only into the header, never into logs.
-func _get_json(url: String, token: String = "") -> Dictionary:
+## {ok, status, json, code, error}. code = contract error code ("wrong_region"…) of a non-2xx body, "" otherwise.
+func _get_json(url: String) -> Dictionary:
 	var request := HTTPRequest.new()
 	request.timeout = 10.0
 	add_child(request)
-	var headers := PackedStringArray(["Accept: application/json"])
-	if token != "":
-		headers.append("Authorization: Bearer " + token)
+	var headers := PackedStringArray(["Accept: application/json", "User-Agent: StreamEmber-Godot/" + VERSION])
 	var error := request.request(url, headers)
 	if error != OK:
 		request.queue_free()
-		return {"ok": false, "status": 0, "json": {}, "error": error_string(error)}
+		return {"ok": false, "status": 0, "json": {}, "code": "", "error": error_string(error)}
 	var answer: Array = await request.request_completed
 	request.queue_free()
 	if answer[0] != HTTPRequest.RESULT_SUCCESS:
-		return {"ok": false, "status": 0, "json": {}, "error": "no answer (result %d)" % answer[0]}
-	var code: int = answer[1]
+		return {"ok": false, "status": 0, "json": {}, "code": "", "error": "no answer (result %d)" % answer[0]}
+	var status: int = answer[1]
 	var body: PackedByteArray = answer[3]
 	var parsed = _J.parse(body.get_string_from_utf8()) if body.size() > 0 else null
-	var ok := code >= 200 and code < 300
-	return {"ok": ok, "status": code, "json": parsed if parsed is Dictionary else {}, "error": "" if ok else "HTTP %d" % code}
+	var json: Dictionary = parsed if parsed is Dictionary else {}
+	var ok := status >= 200 and status < 300
+	var code := "" if ok else _J.text(json, "code")
+	var message := "" if ok else _J.text(json, "message")
+	return {"ok": ok, "status": status, "json": json, "code": code,
+		"error": "" if ok else "HTTP %d%s%s" % [status, " " + code if code != "" else "", ": " + message if message != "" else ""]}
 
 
 func _now() -> float:

@@ -19,7 +19,6 @@ func _initialize() -> void:
 	_test_values()
 	_test_manifest()
 	_test_action()
-	_test_jwt()
 	_test_client()
 	_test_core_queue()
 	_test_updater()
@@ -100,28 +99,27 @@ func _test_action() -> void:
 	check(a.arguments.get_int("count") == 3 and a.arguments.get_bool("extra") == true, "argument defaults merged under saved values")
 	check(Action.new({"quantity": 0}).quantity == 1, "quantity at least 1")
 	check(Action.new({"quantity": 1e12}).quantity == 2147483647, "quantity capped")
-
-
-func _jwt(payload: Dictionary) -> String:
-	var body := Marshalls.utf8_to_base64(JSON.stringify(payload)).replace("+", "-").replace("/", "_").replace("=", "")
-	return "eyJhbGciOiJFUzI1NiJ9." + body + ".sig"
-
-
-func _test_jwt() -> void:
-	var exp := Time.get_unix_time_from_system() + 600.0
-	var t := Core.parse_jwt(_jwt({"sub": "B68B5DCC-090E-48A9-BB38-E8C16886AAB7", "app": "", "exp": exp, "scope": "presence:write"}))
-	check(t.sub == "b68b5dcc-090e-48a9-bb38-e8c16886aab7", "jwt sub")
-	check(t.app == "" and t.scope == "presence:write" and absf(t.exp - exp) < 1.0, "jwt fields")
-	check(Core.parse_jwt("not-a-jwt").is_empty(), "bad jwt")
-	check(Core.parse_jwt(_jwt({"sub": "x"})).is_empty(), "jwt without uuid sub")
-	var fallback := Core.parse_jwt(_jwt({"sub": "b68b5dcc-090e-48a9-bb38-e8c16886aab7"}), 100.0)
-	check(fallback.exp > Time.get_unix_time_from_system() + 90.0, "expiresIn fallback")
+	check(a.viewer.team == null, "no team without teams")
+	var t := Action.new({"viewer": {"nickname": "Ahmet", "team": {"id": "t1", "code": "gs", "name": "Galatasaray", "shortName": "GS", "primaryColor": "#A90432", "logoUrl": "https://cdn/gs.webp"}}})
+	check(t.viewer.team != null and t.viewer.team.code == "gs" and t.viewer.team.short_name == "GS" and t.viewer.team.primary_color == "#A90432", "viewer team")
+	check(t.viewer.team.logo_url == "https://cdn/gs.webp", "team logo url")
+	check(t.render("{user} ({team})") == "Ahmet (Galatasaray)", "render team")
 
 
 func _test_client() -> void:
 	var logs: Array = []
-	var client := Client.new("wss://ef.example", "c-1", "a-1", func(level: String, message: String) -> void: logs.append(message))
+	var client := Client.new(func() -> String: return "wss://ef.example", "c-1", "a-1", func(level: String, message: String) -> void: logs.append(message))
+	client._ws_base = "wss://ef.example"
 	check(client.build_url() == "wss://ef.example/events/ws?format=json&customerUuid=c-1&applicationUuid=a-1", "url")
+	var rejected: Array = []
+	client.identity_rejected.connect(func(code: String) -> void: rejected.append(code))
+	var config_changes := [0]
+	client.config_changed.connect(func() -> void: config_changes[0] += 1)
+	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"config.changed\",\"applicationUuid\":\"a-1\"}}")
+	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"config.changed\",\"applicationUuid\":\"other\"}}")
+	check(config_changes[0] == 1, "config.changed only for this application")
+	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"error\",\"code\":\"wrong_region\"}}")
+	check(rejected == ["wrong_region"], "wrong_region rejected")
 	var received: Array = []
 	client.action_received.connect(func(json: Dictionary) -> void: received.append(json))
 	client.handle_frame("{\"packetType\":\"action\",\"cursor\":\"42\",\"action\":{\"id\":\"x\"}}")

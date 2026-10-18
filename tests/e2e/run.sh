@@ -12,7 +12,6 @@ cp -r "$ROOT/." "$WORK/project"
 cat > "$WORK/project/override.cfg" <<CFG
 [streamember]
 
-eventfabric_url="http://127.0.0.1:$PORT"
 falcon_url="http://127.0.0.1:$PORT"
 launcher_url="http://127.0.0.1:$PORT"
 presence_seconds=5
@@ -36,14 +35,15 @@ check(ids == ["a1", "a3"], "actions delivered once, other game dropped: %s" % id
 check(game["actions"][0].get("count") == 3 and game["actions"][0].get("quantity") == 2, "schema default count=3, quantity=2")
 check(game["actions"][1].get("text") == "Ali sends Rose x2", "render: %s" % game["actions"][1].get("text"))
 check(game["settings"][:1] == [50] and 77 in game["settings"], "settings: schema default then Falcon: %s" % game["settings"])
+check(game["teams"] == ["gs"], "teams from Falcon config: %s" % game["teams"])
 check(game["connections"][:3] == [True, False, True], "connect, drop, reconnect: %s" % game["connections"])
-check(game["gcore_reset"] is True and game["can_write"] is True, "GCore reset with token")
+check(game["gcore_reset"] is True and game["can_write"] is True, "session reset with secret key")
 conns = server["ws_connections"]
 check(len(conns) >= 2 and "replay=true&cursor=c3" in conns[1], "reconnect resumes from cursor: %s" % conns[1:2])
 check(any(m.get("type") == "replay.next" and m.get("cursor") == "c3" for m in server["ws_received"]), "replay.next sent")
 paths = [h["path"] for h in server["http"]]
-check("/api/runtime-token" in paths and "/api/active-application" in paths, "launcher token + active application")
-check(all(h["bearer"] for h in server["http"] if h["path"] in ("/presence", "/gcore/reset")) and "/presence" in paths, "presence/reset carry the bearer token")
-check(not any(h["bearer"] for h in server["http"] if h["path"].startswith("/api/") or h["path"].startswith("/public/")), "token never sent to launcher/Falcon reads")
+check("/api/customer" in paths and "/api/active-application" in paths, "launcher customer + active application")
+check(all(h["keyed"] for h in server["http"] if h["path"] in ("/presence/report", "/sessions/reset", "/api/active-application")) and "/presence/report" in paths, "writes carry the secret key")
+check(not any(h["keyed"] for h in server["http"] if h["path"].startswith("/public/") or h["path"] == "/api/customer"), "key never sent on reads")
 sys.exit(1 if failures else 0)
 PY

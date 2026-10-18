@@ -65,10 +65,11 @@ func _drop_boxes(action: StreamEmberAction) -> void:
 |---|---|
 | `on(id, handler)`, `off(id, handler)` | Aksiyon handler'ı (ana thread'de çalışır) |
 | `live_started`, `live_stopped`, `action_received(action)`, `settings_changed(settings)`, `connection_changed(connected)`, `notified(text, level)` | Sinyaller |
-| `settings`, `settings_revision`, `manifest`, `customer_uuid`, `application_uuid`, `language`, `is_active`, `live_connected`, `can_write` | Durum |
+| `settings`, `settings_revision`, `teams`, `manifest`, `customer_uuid`, `application_uuid`, `language`, `is_active`, `live_connected`, `can_write` | Durum |
 | `hold_actions` | `true` iken aksiyonlar kuyrukta bekler (menü, ara sahne, yükleme) |
-| `reload_settings()`, `reset_gcore(done)` | Ayarları hemen oku; GCore sayaçlarını sıfırla |
-| `StreamEmberAction` | `action`, `arguments`, `quantity`, `viewer` (`display_name`, `username`, `avatar_url`), `gift`, `trigger`, `comment`, `like_count`, `is_test`, `render("{user} {gift}")`, `describe()` |
+| `reload_settings()`, `reset_gcore(done)` | Ayarları hemen oku; canlı oturumu (GCore sayaçları) sıfırla — gizli anahtar gerekir |
+| `StreamEmberAction` | `action`, `arguments`, `quantity`, `viewer` (`display_name`, `username`, `avatar_url`, `team`), `gift`, `trigger`, `comment`, `like_count`, `is_test`, `render("{user} {team} {gift}")`, `describe()` |
+| `StreamEmberAction.Team` | `id`, `code`, `name`, `short_name`, `primary_color`, `secondary_color`, `logo_url` (Falcon'a yüklenen logo). `StreamEmber.teams` aktif takımlar; `action.viewer.team` izleyicinin takımı (GCore seçer/atar; takım yoksa `null`) |
 | `StreamEmberValues` | Noktalı yol: `get_int/get_float(path, fallback, min, max)`, `get_bool`, `get_string`, `get_string_list`, `get_object` |
 
 ## Proje ayarları (`streamember/*`)
@@ -76,11 +77,12 @@ func _drop_boxes(action: StreamEmberAction) -> void:
 | Ayar | Varsayılan | |
 |---|---|---|
 | `enabled` | `true` | Canlı bağlantıyı tamamen kapatır |
-| `launcher_url` / `eventfabric_url` / `falcon_url` | `http://127.0.0.1:47880` / `https://eventfabric.streamember.com` / `https://falcon.streamember.com` | |
-| `customer_uuid` | boş | Yalnız geliştirme: Launcher olmadan bu müşterinin aksiyonlarını dinle |
-| `presence_seconds` / `settings_seconds` | 15 / 60 | |
+| `launcher_url` / `falcon_url` | `http://127.0.0.1:47880` / `https://falcon.streamember.com` | |
+| `eventfabric_url` | boş | Yalnız geliştirme: normalde Launcher yayıncının **bölgesinin** EventFabric adresini verir |
+| `customer_uuid` / `secret_key` | boş | Yalnız geliştirme: Launcher olmadan bu müşterinin aksiyonlarını dinle; `secret_key` (`sek_…`) ile yazma da çalışır |
+| `presence_seconds` / `settings_seconds` | 15 / 600 | |
 | `announce_actions`, `show_notifications` | `true` | Ekranın sağ üstünde kısa bildirimler |
-| `test_hotkeys` | `true` | Ctrl+Shift+F1–F9 şemanın ilk dokuz aksiyonu (test paketi), F10 durum, F11 ayarları yeniden oku, F12 GCore sıfırla |
+| `test_hotkeys` | `true` | Ctrl+Shift+F1–F9 şemanın ilk dokuz aksiyonu (test paketi), F10 durum, F11 ayarları yeniden oku, F12 oturumu sıfırla |
 | `debug` | `false` | Ayrıntılı log |
 
 Log: `user://logs/streamember.log` (her açılışta yeniden başlar) + konsol, `[StreamEmber]` önekiyle.
@@ -88,11 +90,15 @@ Log: `user://logs/streamember.log` (her açılışta yeniden başlar) + konsol, 
 ## Nasıl çalışır
 
 1. İlk karede (sahnenin `_ready` handler'ları kayıtlıyken) manifest ve şema okunur; `live_started` + `settings_changed`.
-2. Müşteri: `customer_uuid` ayarı → Launcher `GET /api/customer` → runtime token `sub`.
-3. EventFabric `/events/ws?format=json&customerUuid&applicationUuid`: kopunca cursor ile kaldığı yerden
+2. Müşteri: `customer_uuid` ayarı → Launcher `GET /api/customer` → `{ customerUuid, secretKey, region: { code, eventFabricUrl } }`.
+   Her EventFabric bağlantısından önce yeniden sorulur (bölge değişimi, yeni giriş, yenilenen anahtar). Sözleşme:
+   `StreamEmberPlatform/docs/handbook/api-contract.md`.
+3. EventFabric `/events/ws?format=json&customerUuid&applicationUuid` (bölgenin adresinde): kopunca cursor ile kaldığı yerden
    (1-2-5-10-20-30 sn geri çekilme), 20 sn ping, son 4096 id ile tekrar eleme, en fazla 2048 bekleyen, kare başına 25 aksiyon.
-4. Falcon `/public/game/config/{müşteri}/{oyun}`: hemen ve 60 sn'de bir; şema varsayılanlarıyla derin birleştirme.
-5. Her 15 sn: presence (Launcher'dan alınan runtime token ile), Launcher `/api/active-application`.
+   Adres değişirse cursor atılır; `wrong_region` / `key_rotated` / `invalid_key` → Launcher yeniden sorulur.
+4. Falcon `/public/customers/{müşteri}/applications/{oyun}/config`: hemen, her bağlantıda, EventFabric `config.changed`
+   mesajında ve 600 sn'de bir; şema varsayılanlarıyla derin birleştirme.
+5. Her 15 sn: `/presence/report?key=` (gizli anahtar), Launcher `/api/active-application?key=`.
 6. Başka oyuna ait aksiyon atılır; şema argüman varsayılanları eklenir; handler'lar çalışır, sonra `action_received`.
 7. Oyun duraklatılınca (`get_tree().paused`) bağlantı, presence ve kısayollar çalışmaya devam eder; aksiyonlar kuyrukta
    bekler. Kuyruk ayrıca `hold_actions = true` iken ve hiç handler kayıtlı değilken (oyun sahnesi açılmadan önceki menü)

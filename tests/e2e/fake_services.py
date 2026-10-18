@@ -21,7 +21,7 @@ def b64(data: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
 
 
-TOKEN = "eyJhbGciOiJFUzI1NiJ9." + b64({"sub": CUSTOMER, "app": APP, "exp": int(time.time()) + 600, "scope": "presence:write"}) + ".sig"
+SECRET_KEY = "sek_" + "x" * 40
 report = {"http": [], "ws_connections": [], "ws_received": []}
 report_path = sys.argv[2]
 
@@ -43,20 +43,23 @@ def process_request(connection, request):
     url = urlsplit(request.path)
     if url.path == "/events/ws":
         return None  # WebSocket upgrade
-    auth = request.headers.get("Authorization", "")
-    report["http"].append({"path": url.path, "query": parse_qs(url.query), "bearer": auth == "Bearer " + TOKEN})
+    query = parse_qs(url.query)
+    keyed = query.get("key") == [SECRET_KEY]
+    report["http"].append({"path": url.path, "query": {k: v for k, v in query.items() if k != "key"}, "keyed": keyed})
     save()
     if url.path == "/api/customer":
-        body = {"customerUuid": CUSTOMER}
-    elif url.path == "/api/runtime-token":
-        body = {"token": TOKEN, "expiresIn": 600}
+        body = {"customerUuid": CUSTOMER, "secretKey": SECRET_KEY,
+                "region": {"code": "tr", "eventFabricUrl": f"http://127.0.0.1:{PORT}"}}
     elif url.path == "/api/active-application":
+        if not keyed:
+            return connection.respond(HTTPStatus.FORBIDDEN, json.dumps({"status": 403, "code": "invalid_key"}))
         body = {}
-    elif url.path == f"/public/game/config/{CUSTOMER}/{APP}":
-        body = {"revision": "r7", "settings": {"boxes": {"maxAlive": 77}}}
-    elif url.path in ("/presence", "/gcore/reset"):
-        if auth != "Bearer " + TOKEN:
-            return connection.respond(HTTPStatus.UNAUTHORIZED, "{}")
+    elif url.path == f"/public/customers/{CUSTOMER}/applications/{APP}/config":
+        body = {"revision": "r7", "settings": {"boxes": {"maxAlive": 77}},
+                "teams": [{"id": "t1", "code": "gs", "name": "Galatasaray", "shortName": "GS", "keywords": ["1"]}]}
+    elif url.path in ("/presence/report", "/sessions/reset"):
+        if not keyed:
+            return connection.respond(HTTPStatus.UNAUTHORIZED, json.dumps({"status": 401, "code": "invalid_key", "message": "Secret key missing or wrong."}))
         body = {"ok": True}
     else:
         return connection.respond(HTTPStatus.NOT_FOUND, "{}")

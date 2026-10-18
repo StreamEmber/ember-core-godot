@@ -61,10 +61,11 @@ func _init(json = null, test: bool = false) -> void:
 	like_count = maxi(0, int(_J.number(_J.obj(_json, "like"), "count")))
 
 
-## Streamer template: {user} {username} {nickname} {quantity} {gift} {comment} {streamer} {platform}.
+## Streamer template: {user} {username} {nickname} {team} {quantity} {gift} {comment} {streamer} {platform}.
 func render(template: String) -> String:
 	return template \
 		.replace("{user}", viewer.display_name) \
+		.replace("{team}", viewer.team.name if viewer.team != null else "") \
 		.replace("{username}", viewer.username) \
 		.replace("{nickname}", viewer.nickname) \
 		.replace("{quantity}", str(quantity)) \
@@ -129,6 +130,8 @@ class Viewer:
 	var nickname: String
 	var avatar_url: String
 	var display_name: String
+	## The viewer's team when the game has teams (chat keyword or auto-assigned by GCore); otherwise null.
+	var team: Team
 
 	func _init(json) -> void:
 		id = _J.text(json, "id")
@@ -136,6 +139,31 @@ class Viewer:
 		nickname = _J.text(json, "nickname")
 		avatar_url = _J.text(json, "avatarUrl")
 		display_name = nickname if nickname != "" else username
+		var part = _J.obj(json, "team")
+		team = Team.new(part) if part != null else null
+
+
+## A team of the game config (StreamEmber.teams) or a viewer's team (viewer.team).
+class Team:
+	var id: String
+	## Lowercase code set by the streamer, e.g. "gs".
+	var code: String
+	var name: String
+	var short_name: String
+	## "#RRGGBB" ("" when not set).
+	var primary_color: String
+	var secondary_color: String
+	## Team logo uploaded to Falcon (public image URL); "" when none. Load it with HTTPRequest.
+	var logo_url: String
+
+	func _init(json) -> void:
+		id = _J.text(json, "id")
+		code = _J.text(json, "code")
+		name = _J.text(json, "name")
+		short_name = _J.text(json, "shortName")
+		primary_color = _J.text(json, "primaryColor")
+		secondary_color = _J.text(json, "secondaryColor")
+		logo_url = _J.text(json, "logoUrl")
 
 
 class Gift:

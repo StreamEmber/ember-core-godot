@@ -1,11 +1,17 @@
 extends RefCounted
 ## EventFabric realtime connection (StreamEmber.Live EventFabricClient), polled from the main thread:
 ## /events/ws?format=json&customerUuid=…&applicationUuid=…  Only packetType=action frames are forwarded.
-## The last cursor is sent as replay=true&cursor=… after a disconnect. Reconnect after 1, 2, 5, 10, 20, 30 s;
-## ping every 20 s.
+## The WebSocket base URL is asked from the resolver before every connect (region may change; a new URL drops
+## the replay cursor). system frames: config.changed → config_changed; error wrong_region/key_rotated/invalid_key
+## → identity_rejected + reconnect. The last cursor is sent as replay=true&cursor=… after a disconnect.
+## Reconnect after 1, 2, 5, 10, 20, 30 s; ping every 20 s.
 
 signal action_received(json: Dictionary)
 signal connection_changed(connected: bool)
+## Falcon settings changed for this application.
+signal config_changed
+## EventFabric refused this identity: "wrong_region" | "key_rotated" | "invalid_key".
+signal identity_rejected(code: String)
 
 const _J := preload("streamember_json.gd")
 const BACKOFF_SECONDS := [1, 2, 5, 10, 20, 30]
@@ -17,7 +23,10 @@ var customer_uuid: String
 var application_uuid: String
 var connected := false
 
-var _ws_base: String
+var _ws_base := ""
+## func() -> String (may await): "wss://…" or "" when unknown.
+var _resolve_ws_base: Callable
+var _resolving := false
 var _log: Callable
 var _peer: WebSocketPeer
 var _cursor := ""
@@ -29,9 +38,9 @@ var _next_ping := 0.0
 var _stopped := false
 
 
-## log: func(level: String, message: String), level = "info" | "warn" | "debug".
-func _init(ws_base: String, customer: String, application: String, log: Callable) -> void:
-	_ws_base = ws_base
+## resolve_ws_base: func() -> String (may await). log: func(level: String, message: String), level = "info" | "warn" | "debug".
+func _init(resolve_ws_base: Callable, customer: String, application: String, log: Callable) -> void:
+	_resolve_ws_base = resolve_ws_base
 	customer_uuid = customer
 	application_uuid = application
 	_log = log
@@ -42,8 +51,8 @@ func poll(now: float) -> void:
 	if _stopped:
 		return
 	if _peer == null:
-		if now >= _next_connect_at:
-			_open(now)
+		if now >= _next_connect_at and not _resolving:
+			_resolve_and_open(now)
 		return
 	_peer.poll()
 	match _peer.get_ready_state():
@@ -95,6 +104,23 @@ func build_url() -> String:
 ## Seconds to wait before the next attempt (exposed for tests).
 func next_delay() -> int:
 	return BACKOFF_SECONDS[clampi(_attempts - 1, 0, BACKOFF_SECONDS.size() - 1)]
+
+
+func _resolve_and_open(now: float) -> void:
+	_resolving = true
+	var ws_base: String = str(await _resolve_ws_base.call()).strip_edges().trim_suffix("/")
+	_resolving = false
+	if _stopped or _peer != null:
+		return
+	if ws_base == "":
+		_drop(now, true, "EventFabric URL unknown (launcher not reachable?)")
+		return
+	if ws_base != _ws_base:
+		if _ws_base != "":
+			_log.call("info", "EventFabric moved to " + ws_base + "; replay cursor dropped.")
+		_ws_base = ws_base
+		_cursor = ""
+	_open(now)
 
 
 func _open(now: float) -> void:
@@ -159,7 +185,18 @@ func _handle_system(system: Dictionary) -> void:
 		if _cursor.strip_edges() != "" and _peer != null:
 			_peer.send_text(JSON.stringify({"type": "replay.next", "cursor": _cursor, "limit": 100}))
 	elif type == "command.rejected":
-		_log.call("warn", "EventFabric rejected a command: " + _text(system.get("message")))
+		_log.call("warn", "EventFabric rejected a command: " + _text(system.get("code")) + " " + _text(system.get("message")))
+	elif type == "config.changed":
+		var application := _text(system.get("applicationUuid"))
+		if application == "" or application == application_uuid:
+			config_changed.emit()
+	elif type == "error" or type == "key_rotated":
+		var code := _text(system.get("code")) if type == "error" else type
+		_log.call("warn", "EventFabric: " + code + " " + _text(system.get("message")))
+		if code in ["wrong_region", "key_rotated", "invalid_key"]:
+			identity_rejected.emit(code)
+			_drop(0.0, false, code)  # the next connect asks the resolver again
+			_next_connect_at = 0.0
 
 
 func cursor() -> String:
