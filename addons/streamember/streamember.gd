@@ -304,10 +304,10 @@ func _identity_resolved(found: Dictionary) -> void:
 			_notify(_message("launcher_unreachable" if offline else "signed_out"), ERROR if offline else WARNING)
 		return
 	var customer: String = found.uuid
-	var same := customer == customer_uuid and found.secret_key == _secret_key and found.eventfabric_url == _eventfabric_url
+	var same: bool = customer == customer_uuid and found.secret_key == _secret_key and found.eventfabric_url == _eventfabric_url
 	if same and _client != null:
 		return
-	var same_uuid := customer == customer_uuid
+	var same_uuid: bool = customer == customer_uuid
 	_warned_no_customer = false
 	if found.secret_key != "" and found.secret_key != _secret_key:
 		_warned_no_write = false
