@@ -23,6 +23,7 @@ def b64(data: dict) -> str:
 
 SECRET_KEY = "sek_" + "x" * 40
 report = {"http": [], "ws_connections": [], "ws_received": []}
+PORT = int(sys.argv[1])
 report_path = sys.argv[2]
 
 
