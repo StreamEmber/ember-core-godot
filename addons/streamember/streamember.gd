@@ -37,7 +37,7 @@ signal stream_changed(status: Dictionary)
 signal notified(text: String, level: int)
 
 ## Version of this addon (the stable part + the embedded core). core_version is the core that actually runs.
-const VERSION := "0.9.0"
+const VERSION := "0.9.1"
 ## Contract with the core: a downloaded core runs only if its API is the same.
 const HOST_API := 1
 const _Boot := preload("boot.gd")

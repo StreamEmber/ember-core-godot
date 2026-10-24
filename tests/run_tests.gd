@@ -36,6 +36,7 @@ func _run() -> void:
 	await _test_sign_in()
 	_test_texts()
 	_test_boot()
+	await _test_panel_keyboard()
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -408,3 +409,42 @@ func _test_boot() -> void:
 	Boot.prune(["0.9.0"], root)
 	check(not DirAccess.dir_exists_absolute(root + "/9.1.0") and Boot.pick("0.9.0", 1, root).source == "embedded", "pruned")
 	Boot._remove_tree(root)
+
+
+## Landscape phone with the keyboard open: every field of every view stays above the keyboard.
+func _test_panel_keyboard() -> void:
+	await process_frame
+	await process_frame
+	var se: Node = root.get_node("StreamEmber")
+	se.open_connect_panel()
+	var panel = se._core._panel
+	var saved := root.size
+	root.size = Vector2i(800, 360)  # a landscape phone; headless has no window, so the keyboard is in viewport units
+	await process_frame
+	panel.keyboard_override = 200.0
+	var limit := 160.0
+	var hidden: Array = []
+	for build in [func() -> void: panel._show_form(), func() -> void: panel._show_reset_request(), func() -> void: panel._show_reset_code()]:
+		build.call()
+		await process_frame
+		for field in _line_edits(panel._body):
+			field.grab_focus()
+			for i in 5:
+				await process_frame
+			var r: Rect2 = field.get_global_rect()
+			if r.position.y < 0.0 or r.end.y > limit + 0.5:
+				hidden.append("%s %s in %s" % [panel._view, field.placeholder_text, r])
+	check(hidden.is_empty(), "keyboard open: no field hidden %s" % [hidden])
+	check(not panel._header_row.visible or limit > 260.0, "compact header while typing on a short screen")
+	panel.keyboard_override = 0.0
+	panel.close()
+	root.size = saved
+
+
+func _line_edits(node: Node) -> Array:
+	var out: Array = []
+	for c in node.get_children():
+		if c is LineEdit:
+			out.append(c)
+		out.append_array(_line_edits(c))
+	return out

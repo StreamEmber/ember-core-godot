@@ -4,7 +4,7 @@ extends Node
 ## from the CDN (see ../boot.gd), so it never uses class_name and finds its siblings with relative preloads.
 ## Everything runs on the main thread; handlers may call the game freely.
 
-const VERSION := "0.9.0"
+const VERSION := "0.9.1"
 ## Contract with the autoload (HOST_API in ../streamember.gd); a core with another API is never loaded.
 const API := 1
 const SOURCE := "godot"

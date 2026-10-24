@@ -21,6 +21,13 @@ var live: Node  # core/live.gd
 var _dim: ColorRect
 var _card: PanelContainer
 var _body: VBoxContainer
+var _header_row: Control
+var _scroll: ScrollContainer
+## Tests / screenshots: a fake virtual keyboard height in window pixels (-1 = ask the OS).
+var keyboard_override := -1.0
+var _keyboard_was := 0.0
+## Until this time (ms) the focused field is kept in view; afterwards the player may scroll freely (to the button).
+var _reveal_until := 0
 var _view := ""
 var _email := ""  # kept between the form and the reset views
 
@@ -52,18 +59,29 @@ func _ready() -> void:
 	var outer := VBoxContainer.new()
 	outer.add_theme_constant_override("separation", 16)
 	_card.add_child(outer)
-	outer.add_child(_header())
+	_header_row = _header()
+	outer.add_child(_header_row)
+	# The body scrolls: a landscape phone with the keyboard open leaves ~40 % of the height; the card never grows past
+	# the visible area and the focused field is scrolled into view.
+	_scroll = ScrollContainer.new()
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_scroll.follow_focus = true
+	outer.add_child(_scroll)
 	_body = VBoxContainer.new()
 	_body.add_theme_constant_override("separation", 12)
-	outer.add_child(_body)
-	_card.resized.connect(_place)
+	_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_scroll.add_child(_body)
 	get_viewport().size_changed.connect(_place)
+	get_viewport().gui_focus_changed.connect(func(_c: Control) -> void: _reveal_until = Time.get_ticks_msec() + 600)
+
 	live.host.identity_changed.connect(_on_live_changed)
 	live.host.connection_changed.connect(_on_live_changed.unbind(1))
 	live.host.stream_changed.connect(_on_live_changed.unbind(1))
 
 
 func open() -> void:
+	if not is_node_ready():
+		await ready  # opened before the game's tree is up (e.g. from an autoload's _ready)
 	visible = true
 	if _signed_in():
 		_show_status()
@@ -101,8 +119,8 @@ func _on_live_changed() -> void:
 
 func _show_form(error := "") -> void:
 	_clear("form")
-	_add(_label(_t("title"), 22, TEXT, true))
-	_add(_label(_t("intro"), 15, QUIET))
+	_add(_spare(_label(_t("title"), 22, TEXT, true)))
+	_add(_spare(_label(_t("intro"), 15, QUIET)))
 	var email := _field(_t("email"), false)
 	email.text = _email
 	email.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_EMAIL_ADDRESS
@@ -142,7 +160,7 @@ func _show_form(error := "") -> void:
 
 func _show_reset_request(error := "") -> void:
 	_clear("reset")
-	_add(_label(_t("reset_title"), 22, TEXT, true))
+	_add(_spare(_label(_t("reset_title"), 22, TEXT, true)))
 	var email := _field(_t("email"), false)
 	email.text = _email
 	email.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_EMAIL_ADDRESS
@@ -159,13 +177,14 @@ func _show_reset_request(error := "") -> void:
 			_show_reset_code()
 		else:
 			_show_reset_request(_Texts.error(str(result.code))))
+	email.text_submitted.connect(func(_t: String) -> void: go.pressed.emit())
 	_add(go)
 	_add(_link(_t("back"), func() -> void: _show_form()))
 
 
 func _show_reset_code(error := "") -> void:
 	_clear("reset")
-	_add(_label(_t("reset_title"), 22, TEXT, true))
+	_add(_spare(_label(_t("reset_title"), 22, TEXT, true)))
 	_add(_label(_t("reset_sent") % _email, 15, QUIET))
 	var code := _field(_t("code"), false)
 	code.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER
@@ -185,6 +204,8 @@ func _show_reset_code(error := "") -> void:
 			_show_status()
 		else:
 			_show_reset_code(_Texts.error(str(result.code))))
+	code.text_submitted.connect(func(_t: String) -> void: password.grab_focus())
+	password.text_submitted.connect(func(_t: String) -> void: go.pressed.emit())
 	_add(go)
 	_add(_link(_t("back"), func() -> void: _show_form()))
 	code.grab_focus.call_deferred()
@@ -259,6 +280,8 @@ func _t(key: String) -> String:
 
 func _clear(view: String) -> void:
 	_view = view
+	if _scroll != null:
+		_scroll.scroll_vertical = 0
 	for c in _body.get_children():
 		c.queue_free()
 
@@ -272,17 +295,71 @@ func _add_error(error: String) -> void:
 		_add(_label(error, 14, DANGER))
 
 
+## Text that may go while the keyboard is open (title, intro): the fields and the button keep the room.
+func _spare(c: Control) -> Control:
+	c.set_meta("spare", true)
+	return c
+
+
+## Visible height of the game above the virtual keyboard, in viewport units.
+func _keyboard_height(view: Vector2) -> float:
+	var px := keyboard_override
+	if px < 0.0:
+		px = float(DisplayServer.virtual_keyboard_get_height()) if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD) else 0.0
+	var window := float(DisplayServer.window_get_size().y)
+	if px <= 0.0:
+		return 0.0
+	return px * view.y / window if window > 0.0 else px  # headless (tests): no window, px are viewport units
+
+
 func _place() -> void:
-	if _card == null:
+	if _card == null or not visible:
 		return
 	var view := get_viewport().get_visible_rect().size
-	var w := minf(WIDTH, view.x - 32.0)
-	_card.custom_minimum_size.x = w
+	var keyboard := _keyboard_height(view)
+	var typing := keyboard > 0.0
+	var free_h := view.y - keyboard
+	var margin := 8.0 if typing else 16.0
+	var w := minf(WIDTH if not typing else maxf(WIDTH, minf(view.x * 0.6, 640.0)), view.x - 2.0 * margin)
+	for c in _body.get_children():
+		if c.has_meta("spare"):
+			c.visible = not typing
+	_header_row.visible = not typing or free_h > 260.0
+	if typing != _card.has_meta("typing"):
+		_card.add_theme_stylebox_override("panel", _box(CARD, 22, 12 if typing else 24, LINE))
+		if typing:
+			_card.set_meta("typing", true)
+		else:
+			_card.remove_meta("typing")
+	var pad := 24.0 if typing else 48.0
+	_scroll.custom_minimum_size.x = w - pad
+	var header_h := (_header_row.get_combined_minimum_size().y + 16.0) if _header_row.visible else 0.0
+	var body_h := _body.get_combined_minimum_size().y
+	var room := maxf(free_h - 2.0 * margin - pad - header_h, 60.0)
+	_scroll.custom_minimum_size.y = minf(body_h, room)
 	_card.size = Vector2(w, 0)
-	var h := _card.get_combined_minimum_size().y
-	var keyboard := DisplayServer.virtual_keyboard_get_height() if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD) else 0
-	var free_h := view.y - (keyboard * view.y / maxf(DisplayServer.window_get_size().y, 1.0) if keyboard > 0 else 0.0)
-	_card.position = Vector2((view.x - w) * 0.5, maxf(16.0, (free_h - h) * 0.5)).floor()
+	_card.size = Vector2(w, _card.get_combined_minimum_size().y)
+	var top := margin if typing else maxf(margin, (free_h - _card.size.y) * 0.5)
+	_card.position = Vector2((view.x - w) * 0.5, top).floor()
+	if keyboard != _keyboard_was:
+		_keyboard_was = keyboard
+		_reveal_until = Time.get_ticks_msec() + 600
+	if Time.get_ticks_msec() < _reveal_until:
+		_reveal_focus()
+
+
+## Keeps the focused field inside the visible part of the card (above the keyboard). Runs for a moment after a focus
+## or keyboard change, so it settles after late layout changes (wrapped text, keyboard animation).
+func _reveal_focus() -> void:
+	var focused := get_viewport().gui_get_focus_owner()
+	if focused == null or _scroll == null or not _body.is_ancestor_of(focused):
+		return
+	var top := focused.get_global_rect().position.y - _scroll.get_global_rect().position.y
+	var bottom := top + focused.size.y
+	if top < 0.0:
+		_scroll.scroll_vertical += floori(top) - 4
+	elif bottom > _scroll.size.y:
+		_scroll.scroll_vertical += ceili(bottom - _scroll.size.y) + 4
 
 
 func _header() -> Control:

@@ -3,6 +3,13 @@
 Sürüm kuralı: PATCH hata düzeltmesi, MINOR geriye uyumlu yenilik, MAJOR oyun kodunu bozabilecek değişiklik
 (başlıkta **Uyumsuz** yazılır ve geçiş adımı verilir).
 
+## 0.9.1 — 2026-10-24
+
+- Bağlan paneli yatay telefonda klavye açıkken: kart klavyenin üstündeki alana sığar (gerekirse içerik kayar),
+  başlık ve açıklama yazarken gizlenir, odaklanan alan her zaman görünür alana kaydırılır; panel klavyeye göre
+  ekranın üstüne yaslanır ve yatayda genişler. Klavyedeki "Enter" bir sonraki alana geçer / gönderir (şifre sıfırlama dahil).
+- `panel.keyboard_override`: testler ve ekran görüntüleri için sahte klavye yüksekliği.
+
 ## 0.9.0 — 2026-10-24 — **Uyumsuz**
 
 Oyun içi StreamEmber girişi, oyunlar arası ortak giriş (Android) ve CDN'den kendini güncelleme.
