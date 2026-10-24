@@ -2,3 +2,4 @@
 *.import
 export_presets.cfg
 /build/
+__pycache__/

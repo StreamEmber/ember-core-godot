@@ -45,7 +45,7 @@ def process_request(connection, request):
     if url.path == "/events/ws":
         return None  # WebSocket upgrade
     query = parse_qs(url.query)
-    keyed = query.get("key") == [SECRET_KEY]
+    keyed = query.get("key") in ([SECRET_KEY], ["dek_e2e"])
     report["http"].append({"path": url.path, "query": {k: v for k, v in query.items() if k != "key"}, "keyed": keyed})
     save()
     if url.path == "/api/customer":

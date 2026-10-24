@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- StreamEmber flame on the brand orange, shown in Settings › Accounts -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+	android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
+	<path android:fillColor="#FF6A1A" android:pathData="M24,2a22,22 0 1,0 0.01,0z" />
+	<path android:fillColor="#FFFFFF" android:pathData="M24,10c2,6 9,9 9,18a9,9 0 0,1 -18,0c0,-5 3,-7 4,-11c1,3 2,4 4,5c0,-5 -1,-8 1,-12z" />
+</vector>

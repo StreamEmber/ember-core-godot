@@ -1,11 +1,12 @@
-# Push to main → if plugin.cfg's version has no Release yet: tests (Godot 4.3 + 4.7) → tag + GitHub Release.
+# Push to main → if plugin.cfg's version has no Release yet: tests (Godot 4.3 + 4.7) → tag + GitHub Release
+# (editors of the games) → signed core on the CDN, components/ember-core-godot (running games update themselves).
 # Kept cheap: one runner, no caches or artifacts, only core files trigger it, a push without a version bump
 # finishes in seconds, and every run deletes the older runs (logs) of this repo.
 name: ci
 on:
   push:
     branches: [main]
-    paths: ['addons/**', 'tests/**', 'demo/**', 'streamember/**', 'project.godot', 'CHANGELOG.md', '.github/workflows/**']
+    paths: ['addons/**', 'tests/**', 'demo/**', 'streamember/**', 'tools/**', 'project.godot', 'CHANGELOG.md', '.github/**']
   workflow_dispatch:
 
 concurrency:
@@ -30,6 +31,7 @@ jobs:
         run: |
           v=$(sed -n 's/^version="\(.*\)"$/\1/p' addons/streamember/plugin.cfg)
           grep -q "^const VERSION := \"$v\"" addons/streamember/streamember.gd || { echo "streamember.gd VERSION != $v"; exit 1; }
+          grep -q "^const VERSION := \"$v\"" addons/streamember/core/live.gd || { echo "core/live.gd VERSION != $v"; exit 1; }
           grep -q "^## $v " CHANGELOG.md || { echo "CHANGELOG.md has no '## $v' section"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           if gh release view "v$v" >/dev/null 2>&1; then
@@ -66,6 +68,22 @@ jobs:
           awk -v h="## $v " 'index($0, h) == 1 {on = 1; next} /^## / {on = 0} on' CHANGELOG.md > notes.md
           zip -qr "streamember-godot-$v.zip" addons/streamember
           gh release create "v$v" "streamember-godot-$v.zip" --target "$GITHUB_SHA" --title "StreamEmber Live $v" --notes-file notes.md
+
+      - name: CDN (core for running games)
+        if: steps.v.outputs.new == 'true'
+        env:
+          EMBER_CORE_SIGNING_KEY: ${{ secrets.EMBER_CORE_SIGNING_KEY }}
+          BUNNY_STORAGE_API_URL: ${{ vars.BUNNY_STORAGE_API_URL }}
+          BUNNY_STORAGE_PASSWORD: ${{ secrets.BUNNY_STORAGE_PASSWORD }}
+          BUNNY_API_KEY: ${{ secrets.BUNNY_API_KEY }}
+          CDN_BASE_URL: ${{ vars.CDN_BASE_URL || 'https://cdn.streamember.com' }}
+        run: |
+          v="${{ steps.v.outputs.version }}"
+          umask 077
+          printf '%s\n' "$EMBER_CORE_SIGNING_KEY" > "$RUNNER_TEMP/core.pem"
+          python3 tools/core_dist.py addons/streamember/core dist "$v" "$RUNNER_TEMP/core.pem"
+          rm -f "$RUNNER_TEMP/core.pem"
+          python3 .github/cdn-publish.py dist components/ember-core-godot "$v"
 
       - name: Delete older runs
         if: always()

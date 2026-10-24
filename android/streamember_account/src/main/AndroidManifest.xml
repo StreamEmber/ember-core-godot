@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+	<application>
+		<!-- Godot finds v2 plugins through this entry: Engine.get_singleton("StreamEmberAccount") -->
+		<meta-data
+			android:name="org.godotengine.plugin.v2.StreamEmberAccount"
+			android:value="com.streamember.account.StreamEmberAccount" />
+		<!-- Every StreamEmber game declares the same account type; Android uses the first installed one. -->
+		<service
+			android:name="com.streamember.account.AuthenticatorService"
+			android:exported="true">
+			<intent-filter>
+				<action android:name="android.accounts.AccountAuthenticator" />
+			</intent-filter>
+			<meta-data
+				android:name="android.accounts.AccountAuthenticator"
+				android:resource="@xml/streamember_authenticator" />
+		</service>
+	</application>
+</manifest>

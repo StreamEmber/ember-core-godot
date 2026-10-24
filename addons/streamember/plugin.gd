@@ -106,13 +106,37 @@ func _show(text: String, confirm := false) -> AcceptDialog:
 	return _dialog
 
 
-## streamember/*.json are not resources; this ships them with every export (no export filter needed).
+## Every export: streamember/*.json (not resources). Android: the StreamEmberAccount library (sign-in shared by the
+## StreamEmber games on the phone; needs "Use Gradle Build") and the streamember://play intent filter, so the
+## launcher's mobile Play button opens the installed game (it carries no data: the player signs in inside the game).
 class _ExportManifest extends EditorExportPlugin:
+	const AAR := "res://addons/streamember/android/streamember-account.aar"
+
 	func _get_name() -> String:
 		return "StreamEmber Live"
+
+	func _supports_platform(_platform: EditorExportPlatform) -> bool:
+		return true
+
+	func _get_android_libraries(_platform: EditorExportPlatform, _debug: bool) -> PackedStringArray:
+		if FileAccess.file_exists(AAR):
+			return PackedStringArray([ProjectSettings.globalize_path(AAR)])
+		return PackedStringArray()
+
+	func _get_android_manifest_activity_element_contents(_platform: EditorExportPlatform, _debug: bool) -> String:
+		return """
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="streamember" android:host="play" />
+        </intent-filter>
+"""
 
 	func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
 		var core = load(CORE_PATH)
 		for path in [core.MODULE_PATH, core.SCHEMA_PATH]:
-			if FileAccess.file_exists(path):
+			# Godot 4 already exports .json as a resource: adding it again duplicates the entry and the Android APK
+			# fails to sign ("Multiple ZIP entries with the same name")
+			if FileAccess.file_exists(path) and not ResourceLoader.exists(path):
 				add_file(path, FileAccess.get_file_as_bytes(path), false)

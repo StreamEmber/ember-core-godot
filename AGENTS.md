@@ -8,10 +8,16 @@ when one changes, port the change to the other.
 ## Layout
 
 ```
-addons/streamember/
-  plugin.cfg, plugin.gd          editor plugin: autoload + streamember/* project settings
-  streamember.gd                 the core (autoload): identity, token, settings, presence, dispatch, hotkeys, log
-  event_fabric_client.gd         WebSocket: replay cursor, backoff, ping, frame handling
+addons/streamember/                stable part (changes only when a game is rebuilt)
+  plugin.cfg, plugin.gd          editor plugin: autoload, streamember/* settings, export (json, Android AAR, intent filter)
+  streamember.gd                 autoload: public API + signals, forwards to the core child
+  boot.gd                        picks the core (embedded / downloaded), downloads + verifies new cores from the CDN
+  core/                          the updatable core (downloaded at run time; no class_name, relative preloads)
+    live.gd                      identity, sign-in, settings, presence, dispatch, hotkeys, log
+    event_fabric_client.gd       WebSocket: replay cursor, backoff, ping, frame handling
+    tiktok_capture.gd            phone collects TikTok itself
+    panel.gd, texts.gd           connect panel + chip, 14 languages
+  android/streamember-account.aar  shared StreamEmber sign-in on Android (source: android/streamember_account)
   streamember_action.gd          StreamEmberAction (GameAction v2)
   streamember_values.gd          StreamEmberValues (dotted-path reader)
   streamember_manifest.gd        StreamEmberManifest (streamember-module.json + game-schema.json)
@@ -21,7 +27,8 @@ addons/streamember/
 streamember/                     the demo's manifest and schema (a game ships its own)
 demo/                            example game: handlers, settings, bounded work, cleanup
 tests/run_tests.gd               headless unit tests (no network)
-tests/e2e/                       fake services + scene; run.sh asserts the full flow
+tests/e2e/                       fake services + scenes; run.sh asserts the launcher flow and the in-game sign-in
+tools/core_dist.py               signs core/ for the CDN (CI)
 ```
 
 ## Rules for the core
@@ -30,14 +37,17 @@ tests/e2e/                       fake services + scene; run.sh asserts the full 
 2. The core owns HTTP, WebSocket, tokens and customer UUIDs; games never do.
 3. Never log or put the runtime token in a URL; only `Authorization: Bearer`. Reads (`/events/ws`, Falcon config) send no token.
 4. Inside the addon reference scripts with `preload` constants (works without the editor's class cache);
-   `class_name` exists for game code.
+   `class_name` exists for game code and only in the stable part. `core/*.gd` preload each other relatively and the
+   stable part by `res://` path, emit the autoload's signals (`host.<signal>.emit`) and keep `const API` equal to
+   `HOST_API`; a public member is added in `streamember.gd` (forwarding) and in the core together. Raising the API means
+   every game must be rebuilt: avoid it.
 5. Every new branch or parser gets a check in `tests/run_tests.gd`; protocol changes also in `tests/e2e/`.
 6. Bump `VERSION` in `streamember.gd` and `plugin.cfg` together; add a `## X.Y.Z — date` section to `CHANGELOG.md`.
 7. Other teams' games update from GitHub Releases. Semver: PATCH fix, MINOR backward-compatible addition, MAJOR only
    when game code must change (mark it **Uyumsuz** in the changelog with the migration step). Never rename or remove
    a public member in a MINOR/PATCH; deprecate first.
-8. Release = bump the version and push to main; `.github/workflows/ci.yml` tests (Godot 4.3 + 4.7), creates the
-   `vX.Y.Z` tag and publishes. No version bump → no release, no tests. Never push tags by hand. A new `.gd` file ships with its `.uid` (open the project once in Godot 4.4+).
+8. Release = bump the version (`streamember.gd`, `core/live.gd`, `plugin.cfg`) and push to main; `.github/workflows/ci.yml` tests (Godot 4.3 + 4.7), creates the
+   `vX.Y.Z` tag, publishes the Release and the signed core to the CDN. No version bump → no release, no tests. Never push tags by hand. A new `.gd` file ships with its `.uid` (open the project once in Godot 4.4+).
 9. Everything in `addons/streamember/` belongs to the core: the updater replaces the folder and deletes files a
    release no longer has. Game-specific files never go there.
 

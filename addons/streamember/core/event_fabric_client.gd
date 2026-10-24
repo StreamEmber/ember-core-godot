@@ -1,20 +1,32 @@
 extends RefCounted
 ## EventFabric realtime connection (StreamEmber.Live EventFabricClient), polled from the main thread:
-## /events/ws?format=json&customerUuid=…&applicationUuid=…  Only packetType=action frames are forwarded.
-## The WebSocket base URL is asked from the resolver before every connect (region may change; a new URL drops
-## the replay cursor). system frames: config.changed → config_changed; error wrong_region/key_rotated/invalid_key
-## → identity_rejected + reconnect. The last cursor is sent as replay=true&cursor=… after a disconnect.
-## Reconnect after 1, 2, 5, 10, 20, 30 s; ping every 20 s.
+## /events/ws?format=json&customerUuid=…&applicationUuid=…  packetType=action → action_received; packetType=event
+## (normalized platform events of the same customer + application) → event_received.
+## The WebSocket base URL is asked from the resolver before every connect (the customer's EventFabric machine may
+## change; a new URL drops the replay cursor). system frames: config.changed → config_changed; error wrong_node /
+## node_disabled / key_rotated / invalid_key → identity_rejected + reconnect; stream.status → stream_status.
+## The last cursor is sent as replay=true&cursor=… after a disconnect.
+## Collection (set_collect): collect=self&key=… asks EventFabric to collect the key owner's enabled platforms. Once
+## every collected stream is final (ended / not_live / not_found / denied) the client stops asking; only restart()
+## asks again (restart=manual). Reconnect after 1, 2, 4, 8, 15, 30 s ±30%; ping every 20 s.
 
 signal action_received(json: Dictionary)
+## A normalized platform event (comment, like, join, follow, share, gift …), as JSON (EventContracts NORMALIZED_EVENT).
+signal event_received(json: Dictionary)
 signal connection_changed(connected: bool)
 ## Falcon settings changed for this application.
 signal config_changed
-## EventFabric refused this identity: "wrong_region" | "key_rotated" | "invalid_key".
+## EventFabric refused this identity: "wrong_node" | "node_disabled" | "key_rotated" | "invalid_key".
 signal identity_rejected(code: String)
+## stream.status of a collected / watched stream: {platform, target, status, reason, since, retryAt, restartAllowedAt,
+## adapter, source}. status: connecting | collecting | reconnecting | grace | ended | not_live | not_found | denied.
+signal stream_status(status: Dictionary)
 
-const _J := preload("streamember_json.gd")
-const BACKOFF_SECONDS := [1, 2, 5, 10, 20, 30]
+const _J := preload("res://addons/streamember/streamember_json.gd")
+const BACKOFF_SECONDS := [1, 2, 4, 8, 15, 30]
+## Final stream statuses: collection is not asked again automatically.
+const TERMINAL := ["ended", "not_live", "not_found", "denied"]
+const REJECT_CODES := ["wrong_node", "node_disabled", "key_rotated", "invalid_key"]
 const MAX_FRAME_BYTES := 4 * 1024 * 1024
 const CONNECT_TIMEOUT := 10.0
 const PING_SECONDS := 20.0
@@ -24,6 +36,13 @@ var application_uuid: String
 var connected := false
 
 var _ws_base := ""
+## Key asking collect=self ("" = listen only).
+var _collect_key := ""
+## false once every collected stream is final; restart() turns it back on.
+var _collecting := false
+var _restart_next := false
+## "platform:target" → last stream.status.
+var streams := {}
 ## func() -> String (may await): "wss://…" or "" when unknown.
 var _resolve_ws_base: Callable
 var _resolving := false
@@ -93,15 +112,46 @@ func stop() -> void:
 		connection_changed.emit(false)
 
 
+## Ask EventFabric to collect the key owner's enabled platforms (collect=self). key: dek_… / sek_… of this customer; "" = listen only.
+func set_collect(key: String) -> void:
+	_collect_key = key
+	_collecting = key != ""
+
+
+func collecting() -> bool:
+	return _collecting
+
+
+## User's "Reconnect": asks collection again (restart=manual) on a fresh connection. EventFabric allows one per 15 s per
+## stream; earlier than restartAllowedAt it answers with the remembered status.
+func restart() -> void:
+	if _collect_key == "":
+		return
+	_collecting = true
+	_restart_next = true
+	reconnect()
+
+
+## Reconnects at once (the URL is resolved again); a transport reconnect never carries restart=manual.
+func reconnect() -> void:
+	if _peer != null:
+		_drop(0.0, false, "reconnect")
+	_next_connect_at = 0.0
+
+
 func build_url() -> String:
 	var url := _ws_base + "/events/ws?format=json&customerUuid=" + customer_uuid.uri_encode() \
 		+ "&applicationUuid=" + application_uuid.uri_encode()
+	if _collecting and _collect_key != "":
+		url += "&collect=self&key=" + _collect_key.uri_encode()
+		if _restart_next:
+			url += "&restart=manual"
 	if _cursor.strip_edges() != "":
 		url += "&replay=true&cursor=" + _cursor.uri_encode()
 	return url
 
 
-## Seconds to wait before the next attempt (exposed for tests).
+## Seconds to wait before the next attempt, without jitter (exposed for tests).
 func next_delay() -> int:
 	return BACKOFF_SECONDS[clampi(_attempts - 1, 0, BACKOFF_SECONDS.size() - 1)]
 
@@ -130,6 +180,7 @@ func _open(now: float) -> void:
 	_peer.max_queued_packets = 4096
 	_connect_started = now
 	var url := build_url()
+	_restart_next = false  # a transport reconnect never repeats the user's restart
 	_log.call("debug", "Connecting to " + url.get_slice("?", 0))
 	var error := _peer.connect_to_url(url)
 	if error != OK:
@@ -147,7 +198,8 @@ func _drop(now: float, failed: bool, reason: String) -> void:
 	if connected:
 		connected = false
 		connection_changed.emit(false)
-	_next_connect_at = now + next_delay()
+	# ±30%: clients dropped together do not come back together
+	_next_connect_at = now + next_delay() * randf_range(0.7, 1.3)
 
 
 ## Exposed for tests: handles one text frame.
@@ -169,7 +221,9 @@ func _handle(text: String) -> void:
 		"system":
 			if frame.get("system") is Dictionary:
 				_handle_system(frame["system"])
-		# packetType=event: raw events are not needed in game (GCore turns them into actions).
+		"event":
+			if frame.get("event") is Dictionary:
+				event_received.emit(frame["event"])
 
 
 func _handle_system(system: Dictionary) -> void:
@@ -187,13 +241,21 @@ func _handle_system(system: Dictionary) -> void:
 	elif type == "command.rejected":
 		_log.call("warn", "EventFabric rejected a command: " + _text(system.get("code")) + " " + _text(system.get("message")))
 	elif type == "config.changed":
-		var application := _text(system.get("applicationUuid"))
-		if application == "" or application == application_uuid:
-			config_changed.emit()
+		# EventFabric sends it only to sockets of this customer + application.
+		config_changed.emit()
+	elif type == "stream.status":
+		# Details travel as a JSON string in system.message.
+		var parsed = _J.parse(_text(system.get("message"))) if not (system.get("message") is Dictionary) else system["message"]
+		if not (parsed is Dictionary) or _text(parsed.get("platform")) == "":
+			return
+		streams[_text(parsed.get("platform")) + ":" + _text(parsed.get("target"))] = parsed
+		if _collecting and streams.values().all(func(s) -> bool: return _text(s.get("status")) in TERMINAL):
+			_collecting = false  # final for every stream: keep listening, ask again only on restart()
+		stream_status.emit(parsed)
 	elif type == "error" or type == "key_rotated":
 		var code := _text(system.get("code")) if type == "error" else type
 		_log.call("warn", "EventFabric: " + code + " " + _text(system.get("message")))
-		if code in ["wrong_region", "key_rotated", "invalid_key"]:
+		if code in REJECT_CODES:
 			identity_rejected.emit(code)
 			_drop(0.0, false, code)  # the next connect asks the resolver again
 			_next_connect_at = 0.0

@@ -7,21 +7,35 @@ const J := preload("res://addons/streamember/streamember_json.gd")
 const Values := preload("res://addons/streamember/streamember_values.gd")
 const Action := preload("res://addons/streamember/streamember_action.gd")
 const Manifest := preload("res://addons/streamember/streamember_manifest.gd")
-const Client := preload("res://addons/streamember/event_fabric_client.gd")
-const Core := preload("res://addons/streamember/streamember.gd")
+const Client := preload("res://addons/streamember/core/event_fabric_client.gd")
+const Core := preload("res://addons/streamember/core/live.gd")
+const Host := preload("res://addons/streamember/streamember.gd")
+const Boot := preload("res://addons/streamember/boot.gd")
+const Texts := preload("res://addons/streamember/core/texts.gd")
 const Updater := preload("res://addons/streamember/updater.gd")
+const Capture := preload("res://addons/streamember/core/tiktok_capture.gd")
 
 var _failures := 0
 var _checks := 0
 
 
 func _initialize() -> void:
+	_run()
+
+
+func _run() -> void:
 	_test_values()
 	_test_manifest()
 	_test_action()
 	_test_client()
+	_test_capture_proto()
+	_test_identity()
 	_test_core_queue()
 	_test_updater()
+	_test_host()
+	await _test_sign_in()
+	_test_texts()
+	_test_boot()
 	print("%d checks, %d failed" % [_checks, _failures])
 	quit(1 if _failures > 0 else 0)
 
@@ -117,25 +131,86 @@ func _test_client() -> void:
 	client.config_changed.connect(func() -> void: config_changes[0] += 1)
 	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"config.changed\",\"applicationUuid\":\"a-1\"}}")
 	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"config.changed\",\"applicationUuid\":\"other\"}}")
-	check(config_changes[0] == 1, "config.changed only for this application")
-	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"error\",\"code\":\"wrong_region\"}}")
-	check(rejected == ["wrong_region"], "wrong_region rejected")
+	check(config_changes[0] == 2, "config.changed always reloads (EventFabric already filters by customer + application, 0.5.1)")
+	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"error\",\"code\":\"wrong_node\"}}")
+	check(rejected == ["wrong_node"], "wrong_node rejected")
 	var received: Array = []
 	client.action_received.connect(func(json: Dictionary) -> void: received.append(json))
 	client.handle_frame("{\"packetType\":\"action\",\"cursor\":\"42\",\"action\":{\"id\":\"x\"}}")
+	var events: Array = []
+	client.event_received.connect(func(json: Dictionary) -> void: events.append(json))
 	client.handle_frame("{\"packetType\":\"event\",\"cursor\":\"43\"}")
+	client.handle_frame("{\"packetType\":\"event\",\"event\":{\"id\":\"e1\",\"catalogId\":\"tiktok.comment\",\"actor\":{\"id\":\"7\"}}}")
 	client.handle_frame("not json")
-	check(received.size() == 1 and received[0].id == "x", "only action frames forwarded")
+	check(received.size() == 1 and received[0].id == "x", "only action frames on action_received")
+	check(events.size() == 1 and events[0].catalogId == "tiktok.comment", "event frames on event_received (0.7.0)")
 	check(client.build_url().ends_with("&replay=true&cursor=43"), "replay with last cursor")
 	check(client.next_delay() == 1, "first delay 1 s")
 	client._attempts = 3
-	check(client.next_delay() == 5, "third failure 5 s")
+	check(client.next_delay() == 4, "third failure 4 s")
 	client._attempts = 99
 	check(client.next_delay() == 30, "delay capped at 30 s")
+	# collection: collect=self with the key, stream.status, final statuses stop asking, restart=manual once
+	client._cursor = ""
+	client.set_collect("dek_k")
+	check(client.build_url() == "wss://ef.example/events/ws?format=json&customerUuid=c-1&applicationUuid=a-1&collect=self&key=dek_k", "collect url")
+	var statuses: Array = []
+	client.stream_status.connect(func(status: Dictionary) -> void: statuses.append(status))
+	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"stream.status\",\"message\":\"{\\\"platform\\\":\\\"tiktok\\\",\\\"target\\\":\\\"ali\\\",\\\"status\\\":\\\"collecting\\\"}\"}}")
+	check(statuses.size() == 1 and statuses[0].get("status") == "collecting" and client.collecting(), "stream.status parsed")
+	client.handle_frame("{\"packetType\":\"system\",\"system\":{\"type\":\"stream.status\",\"message\":\"{\\\"platform\\\":\\\"tiktok\\\",\\\"target\\\":\\\"ali\\\",\\\"status\\\":\\\"ended\\\"}\"}}")
+	check(not client.collecting() and not client.build_url().contains("collect="), "final status: collection not asked again")
+	client.restart()
+	check(client.build_url().ends_with("&collect=self&key=dek_k&restart=manual"), "restart asks with restart=manual")
+
+
+func _test_capture_proto() -> void:
+	check(Capture.varint(300) == PackedByteArray([0xAC, 0x02]), "varint 300")
+	check(Capture.varint(-1).size() == 10, "negative int64 is 10 bytes")
+	check(Capture._read_varint(Capture.varint(7342169118234520331), 0)[0] == 7342169118234520331, "room id round trip")
+	var frame := Capture.push_frame(99, "pb", "hb", Capture.heartbeat(12345))
+	var parsed := Capture.parse_push_frame(frame)
+	check(parsed.log_id == 99 and parsed.payload_type == "hb" and Capture._fields(parsed.payload)[0] == [1, 12345], "push frame round trip")
+	# fetch result: messages[{method: WebcastControlMessage, payload: {action: 3}}], internal_ext "x", need_ack true
+	var control := Capture._tag(2, 0)
+	control.append_array(Capture.varint(3))
+	var message := Capture._bytes_field(1, "WebcastControlMessage".to_utf8_buffer())
+	message.append_array(Capture._bytes_field(2, control))
+	var batch := Capture._bytes_field(1, message)
+	batch.append_array(Capture._bytes_field(5, "x".to_utf8_buffer()))
+	batch.append_array(Capture._tag(9, 0))
+	batch.append_array(Capture.varint(1))
+	var result := Capture.parse_fetch_result(Capture.expand(batch.compress(FileAccess.COMPRESSION_GZIP)))
+	check(result.need_ack and result.internal_ext == "x" and result.stream_ended, "gzip fetch result: ack + stream end")
+	check(Capture._fields(PackedByteArray([0x0A, 0x7F])).is_empty(), "truncated input ignored")
+
+
+func _test_identity() -> void:
+	var core = Core.new()
+	core.clear_identity()
+	check(not core.has_stored_identity(), "no stored identity")
+	core.set_identity({"customer_uuid": "B68B5DCC-090E-48A9-BB38-E8C16886AAB7", "device_key": "dek_x", "eventfabric_url": "https://ef.example/",
+		"targets": [{"platform": "tiktok", "target": "@Ali"}, {"target": ""}], "source": "device"})
+	check(core.has_stored_identity() and core._stored.customer_uuid == "b68b5dcc-090e-48a9-bb38-e8c16886aab7", "identity stored, uuid normalized")
+	check(core._stored.targets == [{"platform": "tiktok", "target": "Ali"}], "targets cleaned: %s" % [core._stored.targets])
+	check(core._stored.eventfabric_url == "https://ef.example" and core._stored.source == "device", "fields")
+	var again = Core.new()
+	again._load_identity()
+	check(again._stored.get("device_key") == "dek_x" and again._stored.targets.size() == 1, "identity reloaded from user://")
+	again._secret_key = "dek_x"
+	again._eventfabric_url = "https://ef.example"
+	check(again.can_write and again.write_scope == "device", "device key: write scope device")
+	again._secret_key = "sek_y"
+	check(again.write_scope == "full", "secret key: full scope")
+	core.set_identity({"customer_uuid": "nope"})
+	check(core._stored.customer_uuid == "b68b5dcc-090e-48a9-bb38-e8c16886aab7", "bad uuid ignored")
+	core.clear_identity()
+	check(not FileAccess.file_exists(Core.IDENTITY_PATH), "identity file removed")
 
 
 func _test_core_queue() -> void:
-	var core = Core.new()
+	var host = Host.new()
+	var core = host._core
 	core.manifest = _manifest()
 	core._config = Core.DEFAULTS.duplicate()
 	core._config.announce_actions = false
@@ -166,14 +241,14 @@ func _test_core_queue() -> void:
 		core._from_network({"id": "r%d" % i})
 		core._incoming.clear()
 	check(core._seen.size() == Core.REMEMBERED_IDS, "remembered ids bounded")
-	core.free()
+	host.free()
 
 
 func _test_updater() -> void:
 	check(Updater.compare("0.10.0", "0.9.9") == 1 and Updater.compare("v1.2.3", "1.2.3") == 0, "version compare")
 	check(Updater.compare("1.2.3-beta", "1.2.4") == -1 and Updater.compare("", "0.1.0") == -1, "version compare suffix/empty")
 	check(Updater.major("2.0.1") == 2, "major")
-	check(Updater.installed_version() == Core.VERSION, "plugin.cfg version == VERSION")
+	check(Updater.installed_version() == Host.VERSION and Core.VERSION == Host.VERSION, "plugin.cfg version == VERSION == core VERSION")
 
 	var zip_path := "user://updater-test.zip"
 	var packer := ZIPPacker.new()
@@ -210,3 +285,126 @@ func _test_updater() -> void:
 	check(FileAccess.file_exists(target.path_join("icon.svg.import")) and not FileAccess.file_exists(target.path_join("gone.png.import")), ".import kept only with its file")
 	check(Updater.files_from_dir("res://").has("updater.gd"), "files from a local checkout")
 	OS.move_to_trash(ProjectSettings.globalize_path(target))
+
+
+func _test_host() -> void:
+	var host = Host.new()
+	check(host.core_source == "embedded" and host.core_version == Host.VERSION, "editor runs the embedded core")
+	check(host._core.API == Host.HOST_API and host._core.host == host, "core API matches, core knows its host")
+	host._core.customer_uuid = "c-9"
+	host.hold_actions = true
+	check(host.customer_uuid == "c-9" and host._core.hold_actions, "properties forwarded both ways")
+	check(Host.DEFAULTS.has("cdn_url") and Host.TERMINAL_STATUSES.has("ended"), "constants come from the embedded core")
+	var fired := [false]
+	host.identity_changed.connect(func() -> void: fired[0] = true)
+	host._core.host.identity_changed.emit()
+	check(fired[0], "core emits the host's signals")
+	host.free()
+
+
+func _test_sign_in() -> void:
+	var host = Host.new()
+	var core = host._core
+	core.manifest = _manifest()
+	core._remember_device_key({"customer_uuid": "b68b5dcc-090e-48a9-bb38-e8c16886aab7", "json": {"deviceKey": "dek_z",
+		"region": {"code": "tr", "eventFabricUrl": "https://tr1.example/"}, "targets": [{"platform": "tiktok", "username": "nabe"}]}},
+		"ali@example.com", true)
+	check(core._stored.device_key == "dek_z" and core._stored.eventfabric_url == "https://tr1.example", "device key stored, url trimmed")
+	check(core._stored.targets == [{"platform": "tiktok", "target": "nabe"}], "Falcon username -> target")
+	check(core._stored.email == "ali@example.com" and core._stored.shared, "e-mail and shared flag stored")
+	var again = Core.new()
+	again._load_identity()
+	check(again._stored.get("email") == "ali@example.com" and again._stored.get("shared") == true, "e-mail / shared reloaded")
+	again.free()
+	core.identity_source = "device"
+	check(host.account_email == "ali@example.com" and core.account_shared(), "account e-mail through the host")
+	check(core._error_code({"ok": false, "status": 0, "code": ""}) == "network" and core._error_code({"ok": false, "status": 401, "code": "invalid_credentials"}) == "invalid_credentials", "error codes")
+	check(core._error_code({"ok": false, "status": 502, "code": ""}) == "http_502", "error code fallback")
+	check(core._client_info("snowball").platform == "desktop" and core.can_sign_in() == OS.is_debug_build(), "desktop: sign-in only in debug builds")
+	# shared sign-in of this phone (Android plugin) — a fake with the same methods
+	var fake := FakeShared.new()
+	core._shared = fake
+	check(core._shared_account().is_empty(), "no shared account")
+	fake.account = JSON.stringify({"email": "ali@example.com", "token": "ses_s", "customerUuid": "b68b5dcc-090e-48a9-bb38-e8c16886aab7"})
+	check(core._shared_account().token == "ses_s", "shared account read")
+	await core._sync_shared_account()
+	check(core._stored.get("email") == "ali@example.com" and not core._minting, "same e-mail: nothing minted")
+	fake.account = ""
+	await core._sync_shared_account()
+	check(core._stored.get("email") == "ali@example.com", "signed out elsewhere: cleared deferred (not inside the lookup)")
+	core._shared = null
+	core.identity_source = ""
+	core.clear_identity()
+	host.free()
+
+
+class FakeShared extends RefCounted:
+	var account := ""
+	var cleared := false
+	func get_account() -> String:
+		return account
+	func set_account(_e: String, _t: String, _c: String) -> bool:
+		return true
+	func clear_account() -> bool:
+		cleared = true
+		account = ""
+		return true
+
+
+func _test_texts() -> void:
+	var bad: Array = []
+	for key in Texts.T:
+		if Texts.T[key].size() != Texts.LANGS.size():
+			bad.append(key)
+	check(bad.is_empty(), "every text in 14 languages: %s" % [bad])
+	var saved := TranslationServer.get_locale()
+	TranslationServer.set_locale("tr_TR")
+	check(Texts.get_text("sign_in") == "Giriş yap", "Turkish")
+	TranslationServer.set_locale("zh_TW")
+	check(Texts.get_text("sign_in") == "登入", "Traditional Chinese from zh_TW")
+	TranslationServer.set_locale("xx")
+	check(Texts.get_text("sign_in") == "Sign in", "unknown language -> English")
+	check(Texts.error("invalid_credentials") == "Wrong e-mail or password." and Texts.error("weird").contains("weird"), "error texts")
+	TranslationServer.set_locale(saved)
+
+
+func _test_boot() -> void:
+	var root := "user://boot-test"
+	Boot._remove_tree(root)
+	DirAccess.make_dir_recursive_absolute(root)
+	var crypto := Crypto.new()
+	var key := crypto.generate_rsa(2048)
+	var pem := key.save_to_string(true)
+	var live := "extends Node\nconst API := 1\nconst VERSION := \"9.1.0\"\nconst H := preload(\"helper.gd\")\n"
+	var helper := "extends RefCounted\n"
+	var files := {"live.gd": live.to_utf8_buffer(), "helper.gd": helper.to_utf8_buffer()}
+	var core_json := JSON.stringify({"version": "9.1.0", "api": 1, "minGodot": "4.3", "files": [
+		{"path": "live.gd", "sha256": Boot.sha256(files["live.gd"]).hex_encode()},
+		{"path": "helper.gd", "sha256": Boot.sha256(files["helper.gd"]).hex_encode()}]}).to_utf8_buffer()
+	var sig := Marshalls.raw_to_base64(crypto.sign(HashingContext.HASH_SHA256, Boot.sha256(core_json), key))
+	check(Boot.verify(core_json, sig, pem), "signature verifies")
+	check(not Boot.verify(core_json, sig), "another key (the real one) refuses it")
+	var tampered := core_json.duplicate()
+	tampered[5] = 65
+	check(Boot.install(tampered, sig, files, 1, root, pem) == "bad signature", "tampered core.json refused")
+	check(Boot.install(core_json, sig, {"live.gd": files["live.gd"], "helper.gd": "x".to_utf8_buffer()}, 1, root, pem).begins_with("checksum"), "file checksum checked")
+	check(Boot.install(core_json, sig, files, 2, root, pem).begins_with("API"), "other API refused")
+	check(not DirAccess.dir_exists_absolute(root + "/9.1.0"), "nothing installed after refusals")
+	check(Boot.install(core_json, sig, files, 1, root, pem) == "", "installed")
+	check(FileAccess.file_exists(root + "/9.1.0/helper.gd"), "files in place")
+	var picked := Boot.pick("0.9.0", 1, root)
+	check(picked.source == "cdn" and picked.version == "9.1.0", "newer downloaded core picked")
+	check(Boot.pick("9.2.0", 1, root).source == "embedded", "newer embedded core wins")
+	Boot.pick("0.9.0", 1, root)  # second start without confirm
+	check(Boot.pick("0.9.0", 1, root).source == "embedded", "two unconfirmed starts -> marked bad, embedded again")
+	var state := ConfigFile.new()
+	state.load(root + "/state.cfg")
+	check(state.get_value("bad", "9.1.0", false) == true, "bad version recorded")
+	check(Boot.install(core_json, sig, files, 1, root, pem) == "" and Boot.pick("0.9.0", 1, root).source == "cdn", "reinstall clears bad")
+	Boot.confirm(root)
+	Boot.pick("0.9.0", 1, root)
+	Boot.confirm(root)
+	check(Boot.pick("0.9.0", 1, root).source == "cdn", "confirmed starts never mark it bad")
+	Boot.prune(["0.9.0"], root)
+	check(not DirAccess.dir_exists_absolute(root + "/9.1.0") and Boot.pick("0.9.0", 1, root).source == "embedded", "pruned")
+	Boot._remove_tree(root)

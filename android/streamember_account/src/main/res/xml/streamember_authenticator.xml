@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<account-authenticator xmlns:android="http://schemas.android.com/apk/res/android"
+	android:accountType="com.streamember.account"
+	android:icon="@drawable/streamember_account"
+	android:smallIcon="@drawable/streamember_account"
+	android:label="@string/streamember_account_label" />

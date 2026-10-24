@@ -22,6 +22,16 @@ func _ready() -> void:
 	StreamEmber.connection_changed.connect(func(connected: bool) -> void: _update_status())
 	StreamEmber.live_stopped.connect(_clear)
 	_update_status()
+	# the core's "● Live" chip in the bottom-right corner: opens the connect panel (sign-in on a phone)
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	var chip := StreamEmber.make_connect_button()
+	chip.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	chip.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	chip.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	chip.offset_right = -16
+	chip.offset_bottom = -16
+	layer.add_child(chip)
 
 
 func _process(_delta: float) -> void:

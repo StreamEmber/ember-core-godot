@@ -47,3 +47,48 @@ check(all(h["keyed"] for h in server["http"] if h["path"] in ("/presence/report"
 check(not any(h["keyed"] for h in server["http"] if h["path"].startswith("/public/") or h["path"] == "/api/customer"), "key never sent on reads")
 sys.exit(1 if failures else 0)
 PY
+
+# Phase 2: no launcher; the player signs in inside the game (fake Falcon auth on PORT+1).
+FALCON_PORT=$((PORT + 1))
+python3 "$ROOT/tests/e2e/fake_falcon.py" "$FALCON_PORT" "$PORT" "$WORK/falcon.json" & FALCON=$!
+trap 'kill $SERVER $FALCON 2>/dev/null || true; rm -rf "$WORK"' EXIT
+cat > "$WORK/project/override.cfg" <<CFG
+[streamember]
+
+falcon_url="http://127.0.0.1:$FALCON_PORT"
+probe_launcher=false
+collect="server"
+presence_seconds=5
+CFG
+sleep 1
+SE_E2E_OUT="$WORK/signin.json" timeout 60 "$GODOT" --headless --path "$WORK/project" res://tests/e2e/e2e_signin.tscn
+
+python3 - "$WORK/signin.json" "$WORK/falcon.json" "$WORK/server.json" <<'PY'
+import json, sys
+game = json.load(open(sys.argv[1])); falcon = json.load(open(sys.argv[2])); server = json.load(open(sys.argv[3]))
+print(json.dumps(game, indent=1))
+failures = []
+def check(ok, label):
+    print(("ok   " if ok else "FAIL ") + label)
+    if not ok: failures.append(label)
+reqs = falcon["requests"]
+check(game["before"] == "", "no identity before sign-in (solo play)")
+check(game["wrong"] == {"ok": False, "code": "invalid_credentials"}, "wrong password: %s" % game["wrong"])
+check(game["right"] == {"ok": True, "code": ""}, "sign-in: %s" % game["right"])
+logins = [r for r in reqs if r["path"] == "/api/auth/login"]
+check(logins[0]["body"]["client"]["app"] == "godot-demo" and logins[1]["body"]["client"]["app"] == "", "unknown game app falls back to the launcher app")
+check(all(r["body"]["email"] == "ali@example.com" for r in logins[2:]), "e-mail trimmed + lower-cased")
+keys = [r for r in reqs if r["path"] == "/api/me/device-keys"]
+check(len(keys) == 1 and keys[0]["auth"] == "Bearer ses_e2e" and keys[0]["body"]["applicationUuid"] == "b68b5dcc-090e-48a9-bb38-e8c16886aab7", "device key asked with the session")
+logouts = [r for r in reqs if r["path"] == "/api/auth/logout"]
+check(len(logouts) >= 1 and logouts[0]["auth"] == "Bearer ses_e2e", "no shared store: session closed right after the device key")
+check(game["customer"] == "11111111-2222-4333-8444-555555555555" and game["source"] == "device" and game["email"] == "ali@example.com", "identity from the sign-in")
+check(game["targets"] == [{"platform": "tiktok", "target": "yayinci"}] and game["write_scope"] == "device", "targets + device key")
+check(game["actions"] == ["a3"] and True in game["connections"], "live actions arrive after sign-in: %s" % game["actions"])
+ws = server["ws_connections"][-1]
+check("collect=self" in ws and "key=dek_e2e" in ws, "EventFabric collects with the device key: %s" % ws)
+check(any(h["path"] == "/presence/report" and h["keyed"] for h in server["http"]), "presence with the device key")
+check(not any("ses_" in json.dumps(h) for h in server["http"]) and not any("ses_" in c for c in server["ws_connections"]), "session token never reaches EventFabric")
+check(game["after_sign_out"] == "" and game["stored_after"] is False, "sign-out forgets the identity")
+sys.exit(1 if failures else 0)
+PY
